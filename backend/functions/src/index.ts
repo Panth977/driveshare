@@ -137,12 +137,13 @@ export const googleSignIn = onCall(api.googleSignIn, opts, async (req) => {
   let role: 'admin' | 'linked';
   if (isAdmin(email)) role = 'admin';
   else if (!(await getDocs(query(collection(db, shares), where('linkedEmails', 'array-contains', email), limit(1)))).empty) role = 'linked';
-  else throw new HttpsError('permission-denied', 'This DriveShare is private. Ask its owner to add your Google account.');
+  else throw new HttpsError('permission-denied', 'This DriveShare is private. If its owner added your Google account to a share, sign in again after they saved it.');
 
   const scope = t.scope ?? '';
   const level = hasScope(scope, 'full') && scope.split(' ').includes(DRIVE_FULL_SCOPE) ? 'full' : hasScope(scope, 'file') ? 'file' : null;
   if (!level) throw new HttpsError('permission-denied', 'Google did not give DriveShare access to your Drive. Sign in again and tick the Google Drive box.');
-  if (role === 'linked' && level !== 'full') throw new HttpsError('permission-denied', 'A linked account must allow DriveShare to see and manage its Drive files, so it can hand them over. Sign in again and tick the Google Drive box.');
+  // A linked account signs in with the small scope first (we don't know who it is yet); the app then asks for the full one.
+  if (role === 'linked' && level !== 'full') throw new HttpsError('failed-precondition', 'needs-full-drive', { email });
 
   const uid = `google:${c.sub}`;
   await auth.getUser(uid).catch(() => auth.createUser({ uid, email, displayName: c.name, photoURL: c.picture, emailVerified: true }));

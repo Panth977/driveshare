@@ -22,6 +22,7 @@ export const api = defineApi({
     errors: {
       'invalid-argument': 'The code was rejected by Google',
       'permission-denied': 'This account may not use this DriveShare, or Drive access was not granted',
+      'failed-precondition': 'needs-full-drive: a linked account must grant full Drive access (ask again with that scope)',
     },
     auth: 'none',
   }),

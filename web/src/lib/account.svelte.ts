@@ -11,6 +11,11 @@ class AccountState {
   known = $state(false);
   busy = $state(false);
   error = $state('');
+  /**
+   * Set when Google signed in a linked account with only the small Drive scope: the account
+   * must still grant full Drive access (a second, explicit consent). Holds the email as a hint.
+   */
+  needsFull = $state<string | null>(null);
 
   constructor() {
     onAuthStateChanged(auth, async (u) => {
@@ -34,7 +39,14 @@ class AccountState {
     if (!r) return;
     if ('error' in r) { this.error = r.error; return; }
     this.busy = true;
-    try { await this.exchange(r.code, r.redirectUri); } catch (e) { this.error = errorText(e); } finally { this.busy = false; }
+    try {
+      await this.exchange(r.code, r.redirectUri);
+      this.needsFull = null;
+    } catch (e) {
+      if (!this.wantsFull(e)) this.error = errorText(e);
+    } finally {
+      this.busy = false;
+    }
   }
 
   /** Sign in (or widen access to `level`). Asks for consent again when Google sent no refresh token. */
@@ -45,11 +57,42 @@ class AccountState {
     try {
       const r = await this.exchange(await requestCode(o));
       if (!r.driveConnected) await this.exchange(await requestCode({ ...o, consent: true }));
+      this.needsFull = null;
+      return true;
+    } catch (e) {
+      if ((e as Error).name === 'SignInCancelled') return false;
+      if (this.wantsFull(e)) return false;
+      if (/popup/i.test(String((e as Error).message))) await redirectForCode(o);
+      this.error = errorCode(e) === 'permission-denied' || errorText(e) ? errorText(e) : 'Sign-in failed';
+      return false;
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  private wantsFull(e: unknown): boolean {
+    if (!/needs-full-drive/.test(errorText(e))) return false;
+    this.needsFull = String((e as { details?: { email?: string } }).details?.email ?? '');
+    return true;
+  }
+
+  /** Second step for a linked account: ask Google for full Drive access, with the consent screen shown. */
+  async grantFull(): Promise<boolean> {
+    this.busy = true;
+    this.error = '';
+    const o: CodeOptions = { level: 'full', consent: true, ...(this.needsFull ? { hint: this.needsFull } : {}) };
+    try {
+      await this.exchange(await requestCode(o));
+      this.needsFull = null;
       return true;
     } catch (e) {
       if ((e as Error).name === 'SignInCancelled') return false;
       if (/popup/i.test(String((e as Error).message))) await redirectForCode(o);
-      this.error = errorCode(e) === 'permission-denied' || errorText(e) ? errorText(e) : 'Sign-in failed';
+      if (this.wantsFull(e)) {
+        this.error = 'Google still did not give DriveShare access to your Drive. On Google\'s screen, tick the box “See, edit, create and delete all of your Google Drive files”, then Continue.';
+        return false;
+      }
+      this.error = errorText(e);
       return false;
     } finally {
       this.busy = false;

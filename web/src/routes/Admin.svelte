@@ -10,6 +10,14 @@
   let loadError = $state('');
   let creating = $state(false);
 
+  // A linked account that signed in here belongs on /link.
+  $effect(() => {
+    if (account.user && account.user.role === 'linked') {
+      history.replaceState(null, '', '/link');
+      dispatchEvent(new PopStateEvent('popstate'));
+    }
+  });
+
   $effect(() => {
     const u = account.user;
     if (!u || u.role !== 'admin') return;
@@ -25,11 +33,7 @@
     <p class="small muted">This site is private: only its owner can sign in. Linked accounts use <a href="/link">/link</a>.</p>
   </SignIn>
 {:else if account.user.role !== 'admin'}
-  <TopBar />
-  <div class="wrap narrow stack">
-    <h2>This page is for the owner</h2>
-    <p class="muted">Your account is linked to someone's shares. See them on <a href="/link">your linked folders</a>.</p>
-  </div>
+  <div class="center muted">Opening your linked folders…</div>
 {:else}
   <TopBar />
   <main class="wrap stack" style="gap:18px">
