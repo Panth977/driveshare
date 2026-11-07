@@ -21,6 +21,7 @@ export interface ShareView {
   lastSync?: Timestamp;
   lastSweep?: Timestamp;
   lastError?: string;
+  sweepLeft?: number;
 }
 
 /** The owner's shares, live. */

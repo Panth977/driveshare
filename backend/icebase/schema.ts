@@ -57,6 +57,8 @@ export const shares = collection('shares', {
     lastSync: f.optional(f.timestamp()),
     lastSweep: f.optional(f.timestamp()),
     lastError: f.optional(f.string()),
+    /** Files from linked accounts still waiting after the last run (it ran out of time; the next run goes on). */
+    sweepLeft: f.optional(f.number({ int: true, min: 0 })),
   },
   indexes: [index('ownerUid'), index('linkedEmails'), index('linked')],
 });

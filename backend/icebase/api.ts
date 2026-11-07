@@ -81,7 +81,7 @@ export const api = defineApi({
     tag: 'Linked accounts',
     summary: 'Move files that linked accounts dropped into a share to your Drive, now',
     input: f.map({ shareId: f.string() }),
-    output: f.map({ moved: f.number(), overCap: f.number(), failed: f.number(), errors: f.array(f.string()) }),
+    output: f.map({ moved: f.number(), overCap: f.number(), failed: f.number(), left: f.number(), errors: f.array(f.string()) }),
     errors: { 'not-found': 'No such share' },
   }),
   shareInfo: endpoint({

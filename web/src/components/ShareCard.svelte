@@ -93,6 +93,7 @@
         {#if s.publicView}<span class="pill">Folder viewable</span>{/if}
         {#if s.linkedEmails.length}<span class="pill on">{s.linkedEmails.length} linked</span>{/if}
         {#if s.lastError}<span class="pill warn" title={s.lastError}>Needs attention</span>{/if}
+        {#if s.sweepLeft}<span class="pill">{s.sweepLeft} waiting</span>{/if}
         <span class="muted">{s.fileCount} files{s.maxFileBytes ? ` · max ${formatBytes(s.maxFileBytes)} each` : ''}</span>
       </div>
     </div>
@@ -137,7 +138,7 @@
     <div class="row">
       <button class="primary" disabled={!!busy} onclick={save}>{busy === 'save' ? 'Saving…' : 'Save changes'}</button>
       {#if s.linkedEmails.length}
-        <button disabled={!!busy} onclick={() => run('sweep', async () => { const r = await sweepNow({ shareId: s.id }); note = `Moved ${r.moved}, over cap ${r.overCap}, failed ${r.failed}.${r.errors.length ? ' ' + r.errors.join(' · ') : ''}`; })}>{busy === 'sweep' ? 'Moving…' : 'Move now'}</button>
+        <button disabled={!!busy} onclick={() => run('sweep', async () => { const r = await sweepNow({ shareId: s.id }); note = `Moved ${r.moved}, over cap ${r.overCap}, failed ${r.failed}${r.left ? `, ${r.left} still waiting (runs again in 15 min, or press Move now)` : ''}.${r.errors.length ? ' ' + r.errors.join(' · ') : ''}`; })}>{busy === 'sweep' ? 'Moving…' : 'Move now'}</button>
       {/if}
       <span style="flex:1"></span>
       <button class="danger" disabled={!!busy} onclick={() => { const t = confirm(`Delete “${s.name}”?\n\nOK = also move its Drive folder to the bin.\nCancel = keep it.`); if (t || confirm('Forget the share but keep the folder in Drive?')) run('delete', () => deleteShare({ shareId: s.id, trashFolder: t })); }}>Delete</button>
@@ -153,7 +154,7 @@
       </div>
       <div class="stack" style="gap:6px">
         <h3>From linked accounts</h3>
-        <p class="small muted" style="margin:0">Last run: {when(s.lastSweep)}</p>
+        <p class="small muted" style="margin:0">Last run: {when(s.lastSweep)}{s.sweepLeft ? ` · ${s.sweepLeft} files still waiting (next run continues)` : ''}</p>
         {#if moves.length === 0}<p class="small muted">Nothing moved yet.</p>{:else}
           <table><tbody>{#each moves as m (m.id)}<tr><td>{m.name}<div class="small muted">{m.from}</div></td><td class="small">{formatBytes(m.size)}</td><td class="small" title={m.error ?? ''} style:color={m.state === 'moved' ? 'var(--accent)' : 'var(--warn)'}>{m.state}</td></tr>{/each}</tbody></table>
         {/if}

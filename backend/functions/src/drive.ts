@@ -36,7 +36,20 @@ const FILE_FIELDS = 'id,name,mimeType,size,parents,owners(emailAddress),appPrope
 export class Drive {
   constructor(private readonly token: string, private readonly f: Fetch = fetch) {}
 
+  /** One Drive call; rate limits and server errors are retried with backoff (Drive asks for that). */
   private async call<T>(method: string, url: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.once<T>(method, url, body, headers);
+      } catch (e) {
+        const retry = e instanceof DriveError && (e.status === 429 || e.status >= 500 || (e.status === 403 && /rateLimit/i.test(e.reason ?? '')));
+        if (!retry || attempt >= 4) throw e;
+        await new Promise((r) => setTimeout(r, Math.min(16_000, 500 * 2 ** attempt) + Math.random() * 300));
+      }
+    }
+  }
+
+  private async once<T>(method: string, url: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
     const res = await this.f(url, {
       method,
       headers: { authorization: `Bearer ${this.token}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...headers },
@@ -73,18 +86,34 @@ export class Drive {
     return out;
   }
 
-  /** Everything under a folder (any depth), folders included. */
-  async walk(folderId: string, maxFolders = 500): Promise<DriveFile[]> {
+  /**
+   * Everything under a folder (any depth), folders included. One level at a time, and each Drive
+   * query asks for the children of up to `batch` folders at once (`'a' in parents or 'b' in parents …`),
+   * `parallel` queries at a time: a tree of 1,000 folders costs ~25 calls, not 1,000.
+   */
+  async walk(folderId: string, opts: { maxFolders?: number; batch?: number; parallel?: number; deadline?: number } = {}): Promise<DriveFile[]> {
+    const { maxFolders = 20_000, batch = 40, parallel = 4, deadline = Infinity } = opts;
     const all: DriveFile[] = [];
-    const queue = [folderId];
-    let seen = 0;
-    while (queue.length && seen++ < maxFolders) {
-      const id = queue.shift()!;
-      const kids = await this.list(`'${id}' in parents and trashed = false`);
-      for (const k of kids) {
-        all.push(k);
-        if (k.mimeType === FOLDER_MIME) queue.push(k.id);
-      }
+    const seen = new Set([folderId]);
+    const got = new Set<string>();
+    let level = [folderId];
+    let folders = 0;
+    while (level.length && folders < maxFolders) {
+      if (Date.now() > deadline) throw new DriveError(408, 'Folder walk ran out of time');
+      folders += level.length;
+      const groups: string[][] = [];
+      for (let i = 0; i < level.length; i += batch) groups.push(level.slice(i, i + batch));
+      const next: string[] = [];
+      await pool(groups, parallel, async (ids) => {
+        const kids = await this.list(`(${ids.map((id) => `'${id}' in parents`).join(' or ')}) and trashed = false`);
+        for (const k of kids) {
+          if (got.has(k.id)) continue; // a file with two parents in the tree comes back twice
+          got.add(k.id);
+          all.push(k);
+          if (k.mimeType === FOLDER_MIME && !seen.has(k.id)) { seen.add(k.id); next.push(k.id); }
+        }
+      });
+      level = next;
     }
     return all;
   }
@@ -148,3 +177,11 @@ export class Drive {
 
 export const folderUrl = (id: string) => `https://drive.google.com/drive/folders/${id}`;
 export const sizeOf = (f: DriveFile) => Number(f.size ?? 0);
+
+/** Run `fn` over `items`, at most `n` at a time. */
+export async function pool<T>(items: T[], n: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (i < items.length) await fn(items[i++]!);
+  }));
+}

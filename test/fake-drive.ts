@@ -49,9 +49,9 @@ export class FakeDrive {
 
     if (url.pathname === '/drive/v3/files' && method === 'GET') {
       const q = url.searchParams.get('q') ?? '';
-      const parent = /'([^']+)' in parents/.exec(q)?.[1];
+      const parents = [...q.matchAll(/'([^']+)' in parents/g)].map((m) => m[1]!);
       const prop = /key='(\w+)' and value='([^']*)'/.exec(q);
-      const out = [...this.files.values()].filter((f) => !f.trashed && this.canSee(who, f) && (!parent || f.parents.includes(parent)) && (!prop || f.appProperties[prop[1]!] === prop[2]));
+      const out = [...this.files.values()].filter((f) => !f.trashed && this.canSee(who, f) && (!parents.length || f.parents.some((p) => parents.includes(p))) && (!prop || f.appProperties[prop[1]!] === prop[2]));
       return json(200, { files: out.map((f) => this.view(f)) });
     }
     if (url.pathname === '/drive/v3/files' && method === 'POST') {

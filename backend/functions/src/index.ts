@@ -13,7 +13,7 @@ import { drive, shares, transfers, uploads, users } from '../../icebase/schema.t
 import { ORIGINS, REGION, deployment } from '../../deployment.ts';
 import { DRIVE_FULL_SCOPE, RESERVE_MS, ROOT_FOLDER, cleanName, hasScope, room } from '../../shared.ts';
 import { Drive, DriveError, folderUrl, sizeOf } from './drive.ts';
-import { sweepShare } from './sweep.ts';
+import { sweepShare, type SweepItem } from './sweep.ts';
 
 const app = initializeAdminApp(config, (process.env.ICEBASE_ENV ?? 'prod') as 'local' | 'prod');
 const db = getAdminFirestore(app);
@@ -296,7 +296,7 @@ export const syncShare = onCall(api.syncShare, opts, async (req) => {
   const uid = admin(req);
   const s = await ownShare(uid, req.data.shareId);
   await expireStale(req.data.shareId);
-  const files = await (await driveFor(uid)).walk(s.folderId);
+  const files = await (await driveFor(uid)).walk(s.folderId, { deadline: Date.now() + 50_000 });
   const mine = files.filter((f) => f.owners?.[0]?.emailAddress?.toLowerCase() === s.ownerEmail && !f.mimeType.endsWith('.folder'));
   const usedBytes = mine.reduce((n, f) => n + sizeOf(f), 0);
   const active = await getDocs(query(collection(db, uploads, req.data.shareId), where('state', '==', 'started'), where('expiresAt', '>=', now())));
@@ -391,9 +391,9 @@ export const finishUpload = onCall(api.finishUpload, opts, async (req) => {
 
 // ─── linked accounts: hand files over to the owner ────────────────────────────
 
-async function sweepOne(shareId: string) {
+async function sweepOne(shareId: string, deadline: number) {
   const s = (await getDoc(shareRef(shareId))).data() as Share | undefined;
-  if (!s || !s.enabled || !s.linkedEmails?.length) return { moved: 0, overCap: 0, failed: 0, errors: [] as string[] };
+  if (!s || !s.enabled || !s.linkedEmails?.length) return { moved: 0, overCap: 0, failed: 0, left: 0, errors: [] as string[] };
   const owner = await driveFor(s.ownerUid);
   const linked = [];
   const errors: string[] = [];
@@ -406,36 +406,45 @@ async function sweepOne(shareId: string) {
       errors.push(`${email}: Drive access was revoked; they need to link again`);
     }
   }
-  const r = await sweepShare({ folderId: s.folderId, ownerEmail: s.ownerEmail, capBytes: s.capBytes, usedBytes: s.usedBytes, owner, linked });
+  // Save as we go: a run that is cut off keeps what it moved, and the dashboard fills in live.
+  const save = async (items: SweepItem[]) => {
+    const b = writeBatch(db);
+    for (const i of items) {
+      b.set(doc(collection(db, transfers, shareId), i.id), { name: i.name, size: i.size, from: i.from, state: i.state, ...(i.error ? { error: i.error } : {}), at: now() } as never);
+    }
+    const moved = items.filter((i) => i.state === 'moved');
+    const bytes = moved.reduce((n, i) => n + i.size, 0);
+    const files = moved.filter((i) => i.size > 0).length;
+    if (bytes || files) b.update(shareRef(shareId), { usedBytes: increment(bytes), fileCount: increment(files) } as never);
+    await b.commit();
+  };
+  const r = await sweepShare({ folderId: s.folderId, ownerEmail: s.ownerEmail, capBytes: s.capBytes, usedBytes: s.usedBytes, owner, linked, deadline, onProgress: save });
   errors.push(...r.errors);
-  const moved = r.items.filter((i) => i.state === 'moved');
-  const b = writeBatch(db);
-  for (const i of r.items) {
-    b.set(doc(collection(db, transfers, shareId), i.id), { name: i.name, size: i.size, from: i.from, state: i.state, ...(i.error ? { error: i.error } : {}), at: now() } as never);
-  }
-  b.update(shareRef(shareId), {
-    usedBytes: increment(r.usedBytes - s.usedBytes),
-    fileCount: increment(moved.filter((i) => i.size > 0).length),
+  await updateDoc(shareRef(shareId), {
     lastSweep: serverTimestamp(),
-    ...(errors.length ? { lastError: errors.join('\n').slice(0, 2000) } : { lastError: deleteField() }),
+    lastError: errors.length ? errors.join('\n').slice(0, 2000) : deleteField(),
+    sweepLeft: r.left ? r.left : deleteField(),
   } as never);
-  await b.commit();
-  return { moved: moved.length, overCap: r.items.filter((i) => i.state === 'over-cap').length, failed: r.items.filter((i) => i.state === 'failed').length, errors };
+  const n = (st: string) => r.items.filter((i) => i.state === st).length;
+  return { moved: n('moved'), overCap: n('over-cap'), failed: n('failed'), left: r.left, errors };
 }
 
-export const sweepNow = onCall(api.sweepNow, opts, async (req) => {
+export const sweepNow = onCall(api.sweepNow, { ...opts, timeoutSeconds: 120 }, async (req) => {
   const uid = admin(req);
   await ownShare(uid, req.data.shareId);
-  return sweepOne(req.data.shareId);
+  return sweepOne(req.data.shareId, Date.now() + 90_000);
 });
 
 /** One tick: only shares with linked accounts are read (one query when there are none). */
-export const sweep = onSchedule({ schedule: process.env.SWEEP_SCHEDULE || 'every 15 minutes', region: REGION, secrets: SECRETS, timeoutSeconds: 300, memory: '256MiB' }, async () => {
+export const sweep = onSchedule({ schedule: process.env.SWEEP_SCHEDULE || 'every 15 minutes', region: REGION, secrets: SECRETS, timeoutSeconds: 540, memory: '256MiB' }, async () => {
+  // Cloud Scheduler gives up on the call after 5 minutes: stop starting new hand-overs before that.
+  // What is left waits for the next tick (sweepLeft on the share).
+  const deadline = Date.now() + 250_000;
   const snap = await getDocs(query(collection(db, shares), where('linked', '==', true)));
   for (const d of snap.docs) {
     try {
-      const r = await sweepOne(d.id);
-      if (r.moved || r.failed) console.log(`sweep ${d.id}: moved ${r.moved}, over cap ${r.overCap}, failed ${r.failed}`);
+      const r = await sweepOne(d.id, deadline);
+      if (r.moved || r.failed || r.left) console.log(`sweep ${d.id}: moved ${r.moved}, over cap ${r.overCap}, failed ${r.failed}, left ${r.left}`);
     } catch (e) {
       console.error(`sweep ${d.id}:`, e instanceof DriveError ? e.message : e);
     }
