@@ -17,7 +17,7 @@ export const deployment = {
     appId: '1:35301309547:web:5b09392ee191663ecc852e',
   },
   /** Google Auth Platform › Clients › Web client (its secret goes to Secret Manager as GOOGLE_CLIENT_SECRET). */
-  googleClientId: '35301309547-REPLACE.apps.googleusercontent.com',
+  googleClientId: '35301309547-5gqt8iie2t85m8j5j806th30puqh646m.apps.googleusercontent.com',
   /** Extra origins the web app is served from (the two Firebase Hosting ones are always allowed). */
   extraOrigins: [] as string[],
   /** Local dev server. */

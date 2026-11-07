@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>DriveShare · Privacy</title>
+<style>body{font:16px/1.6 ui-sans-serif,system-ui,sans-serif;max-width:720px;margin:40px auto;padding:0 20px;color:#1c1b18;background:#f6f2ea}h1,h2{font-family:ui-serif,Georgia,serif}</style></head>
+<body>
+<h1>DriveShare privacy policy</h1>
+<p>DriveShare is open-source software (<a href="https://github.com/Panth977/driveshare">github.com/Panth977/driveshare</a>). This page covers the deployment at driveshare-p977.web.app, a private site used by its owner.</p>
+<h2>What we keep</h2>
+<ul>
+<li>For accounts that sign in with Google: email address, name, profile photo URL, and an encrypted Google refresh token, so the service can act on your Google Drive when you are not on the site.</li>
+<li>For each share: its name, size limits, the Drive folder id, and a log of uploads and moved files (file name, size, time, the optional name an uploader typed).</li>
+</ul>
+<p>File contents are never stored by DriveShare. Uploads go from your browser straight to Google Drive.</p>
+<h2>How Google user data is used</h2>
+<ul>
+<li><b>Owner account</b> (drive.file, and drive when linked accounts are used): to create share folders, receive uploads into them, count their size, and accept files handed over by linked accounts.</li>
+<li><b>Linked accounts</b> (drive): only to list files the linked account put inside folders it was invited to, and to hand ownership of those files to the share owner.</li>
+</ul>
+<p>Google user data is not sold, not used for advertising, not shared with anyone else, and not used to train AI models. DriveShare's use of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
+<h2>Removing your data</h2>
+<p>Revoke access at <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>; the stored token stops working at once and is deleted on next use. To have your account record deleted, open an issue on the GitHub repository.</p>
+</body></html>

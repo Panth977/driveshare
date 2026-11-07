@@ -89,7 +89,10 @@ function admin(req: { auth?: { uid: string; token: Record<string, unknown> } }):
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Share = Record<string, any>;
 
+const validId = (id: string) => /^[\w-]{1,64}$/.test(id);
+
 async function ownShare(uid: string, shareId: string) {
+  if (!validId(shareId)) throw new HttpsError('not-found', 'No such share');
   const snap = await getDoc(shareRef(shareId));
   const s = snap.data() as Share | undefined;
   if (!s || s.ownerUid !== uid) throw new HttpsError('not-found', 'No such share');
@@ -102,6 +105,7 @@ function sameSecret(a: string, b: string): boolean {
 }
 /** The share behind an upload link, if the link is right and on. */
 async function linkShare(shareId: string, secret: string) {
+  if (!validId(shareId)) throw new HttpsError('not-found', 'The link is wrong or was turned off');
   const s = (await getDoc(shareRef(shareId))).data() as Share | undefined;
   if (!s || !s.enabled || !s.uploadLink || !sameSecret(s.secret, secret)) throw new HttpsError('not-found', 'The link is wrong or was turned off');
   return s;
@@ -356,6 +360,7 @@ export const startUpload = onCall(api.startUpload, opts, async (req) => {
 export const finishUpload = onCall(api.finishUpload, opts, async (req) => {
   const { shareId, uploadId } = req.data;
   const s = await linkShare(shareId, req.data.secret);
+  if (!validId(uploadId)) throw new HttpsError('not-found', 'Unknown upload');
   const upRef = doc(collection(db, uploads, shareId), uploadId);
   const up = (await getDoc(upRef)).data() as { state: string; size: number } | undefined;
   if (!up) throw new HttpsError('not-found', 'Unknown upload');
