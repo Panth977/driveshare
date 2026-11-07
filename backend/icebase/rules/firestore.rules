@@ -1,0 +1,21 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Every write goes through the functions. The web app only reads what belongs to it.
+    match /users/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+      match /private/{doc} {
+        allow read, write: if false;
+      }
+    }
+    match /shares/{shareId} {
+      allow read: if request.auth != null && resource.data.ownerUid == request.auth.uid;
+      allow write: if false;
+      match /{sub}/{id} {
+        allow read: if request.auth != null && get(/databases/$(database)/documents/shares/$(shareId)).data.ownerUid == request.auth.uid;
+        allow write: if false;
+      }
+    }
+  }
+}

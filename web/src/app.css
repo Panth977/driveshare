@@ -1,0 +1,68 @@
+:root {
+  --ink: #1c1b18;
+  --muted: #6b675e;
+  --line: #e4ded1;
+  --paper: #f6f2ea;
+  --card: #fffdf8;
+  --accent: #14532d;
+  --accent-2: #1f7a45;
+  --warn: #9a3412;
+  --bad: #b91c1c;
+  --radius: 14px;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+  -webkit-font-smoothing: antialiased;
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; }
+a { color: var(--accent-2); }
+h1, h2, h3 { font-family: ui-serif, Georgia, 'Times New Roman', serif; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+h1 { font-size: 30px; }
+h2 { font-size: 22px; }
+h3 { font-size: 17px; }
+p { line-height: 1.5; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.mono { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 12.5px; }
+.wrap { max-width: 980px; margin: 0 auto; padding: 28px 20px 80px; }
+.narrow { max-width: 620px; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.spread { justify-content: space-between; }
+.stack { display: grid; gap: 12px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; }
+button, .btn {
+  font: inherit; font-size: 14px; font-weight: 550; cursor: pointer; border-radius: 10px; padding: 9px 14px;
+  border: 1px solid var(--line); background: var(--card); color: var(--ink); text-decoration: none; display: inline-flex; align-items: center; gap: 6px;
+}
+button:hover, .btn:hover { border-color: #cfc6b3; }
+button.primary, .btn.primary { background: var(--accent); border-color: var(--accent); color: #f6f2ea; }
+button.primary:hover { background: var(--accent-2); }
+button.danger { color: var(--bad); }
+button:disabled { opacity: 0.55; cursor: default; }
+button.link { border: 0; background: none; padding: 0; color: var(--accent-2); font-weight: 500; }
+input, select, textarea {
+  font: inherit; font-size: 14px; padding: 9px 11px; border-radius: 10px; border: 1px solid var(--line); background: #fff; color: var(--ink); width: 100%;
+}
+input:focus, textarea:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 30%, transparent); border-color: var(--accent); }
+label { display: grid; gap: 5px; font-size: 13px; font-weight: 550; color: var(--muted); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+.bar { height: 10px; border-radius: 99px; background: #ebe5d8; overflow: hidden; display: flex; }
+.bar > .used { background: var(--accent); }
+.bar > .held { background: repeating-linear-gradient(45deg, #86a98f, #86a98f 4px, #a7c2ad 4px, #a7c2ad 8px); }
+.bar.full > .used { background: var(--warn); }
+.pill { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 99px; background: #ece6d9; color: var(--muted); }
+.pill.on { background: #dcecdf; color: var(--accent); }
+.pill.warn { background: #f8e3d6; color: var(--warn); }
+.error { color: var(--bad); font-size: 14px; }
+.topbar { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--card); }
+.brand { display: flex; align-items: center; gap: 10px; font-family: ui-serif, Georgia, serif; font-weight: 600; font-size: 19px; color: var(--ink); text-decoration: none; }
+.brand img { width: 28px; height: 28px; }
+.avatar { width: 28px; height: 28px; border-radius: 50%; }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+td, th { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--line); }
+th { color: var(--muted); font-weight: 550; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+.drop { border: 2px dashed #cdbfa3; border-radius: var(--radius); padding: 38px 20px; text-align: center; background: var(--card); transition: background 0.15s, border-color 0.15s; }
+.drop.over { background: #eef5ef; border-color: var(--accent); }
+.center { min-height: 70vh; display: grid; place-items: center; }

@@ -1,0 +1,23 @@
+{
+  "name": "driveshare",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "workspaces": ["backend", "web"],
+  "scripts": {
+    "dev": "npm run dev -w @driveshare/web",
+    "build": "npm run build -w @driveshare/web",
+    "check": "tsc -p backend && npm run check -w @driveshare/web",
+    "test": "vitest run",
+    "setup": "node backend/scripts/setup.mjs",
+    "deploy": "npm run deploy:rules && npm run deploy:functions && npm run deploy:web",
+    "deploy:functions": "node backend/scripts/deploy-functions.mjs",
+    "deploy:rules": "node backend/scripts/deploy-rules.mjs",
+    "deploy:web": "npm run build && node backend/scripts/deploy-web.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}
