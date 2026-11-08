@@ -130,7 +130,7 @@
     <label>
       Linked Google accounts (one per line)
       <textarea bind:value={emails} rows="3" placeholder="my.other.account@gmail.com"></textarea>
-      <span class="small" style="font-weight:400">They get edit access to the Drive folder and can drop files in from Google Drive itself. Once they sign in at <a href="/link">/link</a>, files they add move to your Drive (every 15 minutes, or “Move now”), so they stop using their storage. Files over the cap stay with them.</span>
+      <span class="small" style="font-weight:400">They get edit access to the Drive folder and can drop files in from Google Drive itself. Once they sign in at <a href="/link">/link</a>, files they add move to your Drive (every 5 minutes, or “Move now”), so they stop using their storage. Files over the cap stay with them.</span>
     </label>
 
     {#if error}<p class="error">{error}</p>{/if}
@@ -138,7 +138,7 @@
     <div class="row">
       <button class="primary" disabled={!!busy} onclick={save}>{busy === 'save' ? 'Saving…' : 'Save changes'}</button>
       {#if s.linkedEmails.length}
-        <button disabled={!!busy} onclick={() => run('sweep', async () => { const r = await sweepNow({ shareId: s.id }); note = `Moved ${r.moved}, over cap ${r.overCap}, failed ${r.failed}${r.left ? `, ${r.left} still waiting (runs again in 15 min, or press Move now)` : ''}.${r.errors.length ? ' ' + r.errors.join(' · ') : ''}`; })}>{busy === 'sweep' ? 'Moving…' : 'Move now'}</button>
+        <button disabled={!!busy} onclick={() => run('sweep', async () => { const r = await sweepNow({ shareId: s.id }); note = `Moved ${r.moved}, over cap ${r.overCap}, failed ${r.failed}${r.left ? `, ${r.left} still waiting (runs again in 5 min, or press Move now)` : ''}.${r.errors.length ? ' ' + r.errors.join(' · ') : ''}`; })}>{busy === 'sweep' ? 'Moving…' : 'Move now'}</button>
       {/if}
       <span style="flex:1"></span>
       <button class="danger" disabled={!!busy} onclick={() => { const t = confirm(`Delete “${s.name}”?\n\nOK = also move its Drive folder to the bin.\nCancel = keep it.`); if (t || confirm('Forget the share but keep the folder in Drive?')) run('delete', () => deleteShare({ shareId: s.id, trashFolder: t })); }}>Delete</button>

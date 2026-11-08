@@ -65,6 +65,11 @@ export class Drive {
     return json as T;
   }
 
+  /** Who this token is; `permissionId` is the id of this user's permission on any file. */
+  about(): Promise<{ user?: { emailAddress?: string; permissionId?: string } }> {
+    return this.call('GET', `${API}/about?fields=user(emailAddress,permissionId)`);
+  }
+
   get(id: string): Promise<DriveFile> {
     return this.call('GET', `${API}/files/${encodeURIComponent(id)}?fields=${FILE_FIELDS}`);
   }

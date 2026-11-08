@@ -28,7 +28,7 @@ describe('sweepShare', () => {
     expect(fd.quota(OWNER)).toBe(3 * GB);
   });
 
-  it('leaves files over the cap with the sender and moves the rest, small first', async () => {
+  it('leaves files over the cap with the sender and moves the rest, big first', async () => {
     const { fd, folder, owner, alt } = setup();
     fd.add(ALT, { name: 'big', size: 8 * GB, parents: [folder.id] });
     fd.add(ALT, { name: 'small', size: 1 * GB, parents: [folder.id] });

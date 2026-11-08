@@ -25,7 +25,7 @@
   <TopBar />
   <main class="wrap narrow stack">
     <h1>Linked</h1>
-    <p class="muted">Drop files into these folders from Google Drive (web, phone or desktop). Within about 15 minutes they move to the owner's Drive; your storage is freed. A file that does not fit under the cap stays yours.</p>
+    <p class="muted">Drop files into these folders from Google Drive (web, phone or desktop). Within about 5 minutes they move to the owner's Drive; your storage is freed. A file that does not fit under the cap stays yours.</p>
     {#if error}<p class="error">{error}</p>{/if}
     {#if list === null && !error}<p class="muted">Loading…</p>{/if}
     {#each list ?? [] as s}

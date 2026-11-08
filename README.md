@@ -28,7 +28,7 @@ shared with them is still theirs. Google lets only the current owner offer a fil
   in your Drive with your token, and gives the browser only the session URL. The browser sends the bytes
   straight to Google; they never touch our servers. You own the file from the start.
 - **Linked accounts**: with the linked account's token, the sweep offers each new file in the folder to
-  you; with yours, it accepts. Runs every 15 minutes (or "Move now").
+  you; with yours, it accepts. Runs every 5 minutes (or "Move now").
 
 ## Cost
 

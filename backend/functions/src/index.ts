@@ -436,7 +436,7 @@ export const sweepNow = onCall(api.sweepNow, { ...opts, timeoutSeconds: 120 }, a
 });
 
 /** One tick: only shares with linked accounts are read (one query when there are none). */
-export const sweep = onSchedule({ schedule: process.env.SWEEP_SCHEDULE || 'every 15 minutes', region: REGION, secrets: SECRETS, timeoutSeconds: 540, memory: '256MiB' }, async () => {
+export const sweep = onSchedule({ schedule: process.env.SWEEP_SCHEDULE || 'every 5 minutes', region: REGION, secrets: SECRETS, timeoutSeconds: 540, memory: '256MiB' }, async () => {
   // Cloud Scheduler gives up on the call after 5 minutes: stop starting new hand-overs before that.
   // What is left waits for the next tick (sweepLeft on the share).
   const deadline = Date.now() + 250_000;

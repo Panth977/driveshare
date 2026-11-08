@@ -47,6 +47,7 @@ export class FakeDrive {
     const err = (status: number, message: string) => json(status, { error: { message, errors: [{ reason: 'x' }] } });
     const parts = url.pathname.replace('/drive/v3/', '').split('/');
 
+    if (url.pathname === '/drive/v3/about') return json(200, { user: { emailAddress: who, permissionId: permId(who) } });
     if (url.pathname === '/drive/v3/files' && method === 'GET') {
       const q = url.searchParams.get('q') ?? '';
       const parents = [...q.matchAll(/'([^']+)' in parents/g)].map((m) => m[1]!);
