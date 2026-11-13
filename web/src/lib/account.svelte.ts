@@ -105,6 +105,10 @@ class AccountState {
   }
 
   async signOut(): Promise<void> {
+    // Leave nothing of the Drive behind on this screen (a TV is often shared).
+    localStorage.removeItem('ds.driveToken');
+    await Promise.all(['ds-thumb-v1', 'ds-orig-v1'].map((c) => caches?.delete(c).catch(() => false)));
+    for (const db of ['driveshare-index', 'driveshare-cache']) indexedDB.deleteDatabase(db);
     await signOut(auth);
   }
 }

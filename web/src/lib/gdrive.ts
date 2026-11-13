@@ -2,7 +2,7 @@
 // token (driveAccess); every list, preview, comment and upload goes from here to Google directly,
 // so a 5 TB Drive costs the functions one call an hour.
 import { FOLDER_MIME } from '@driveshare/backend/shared';
-import { driveAccess, errorText } from './icebase.ts';
+import { auth, driveAccess, errorText } from './icebase.ts';
 
 export { FOLDER_MIME };
 
@@ -76,6 +76,14 @@ export interface DriveApi {
 }
 
 const API = 'https://www.googleapis.com/drive/v3';
+const TOKEN_KEY = 'ds.driveToken';
+function readSavedToken(uid: string): { value: string; until: number; email: string } | null {
+  try {
+    const t = JSON.parse(localStorage.getItem(TOKEN_KEY) ?? 'null') as { uid: string; value: string; until: number; email: string } | null;
+    return t && uid && t.uid === uid && Date.now() < t.until ? t : null;
+  } catch { return null; }
+}
+export const forgetDriveToken = () => localStorage.removeItem(TOKEN_KEY);
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
 
 export class RestDrive implements DriveApi {
@@ -83,16 +91,36 @@ export class RestDrive implements DriveApi {
   private pending: Promise<string> | null = null;
   email = '';
 
+  constructor() {
+    setTokenSource((fresh) => { if (fresh) this.dropToken(); return this.token(); });
+  }
+
+  /**
+   * The owner's Google access token. Kept in localStorage until it expires (about an hour), so
+   * reloading the page or opening a new tab costs no function call: one call an hour at most.
+   */
   async token(): Promise<string> {
     if (this.tok && Date.now() < this.tok.until) return this.tok.value;
+    const uid = auth.currentUser?.uid ?? '';
+    const saved = readSavedToken(uid);
+    if (saved) {
+      this.tok = { value: saved.value, until: saved.until };
+      this.email = saved.email;
+      postToken(saved.value);
+      return saved.value;
+    }
     this.pending ??= driveAccess({}).then((r) => {
       this.tok = { value: r.accessToken, until: r.expiresAt };
       this.email = r.email;
+      localStorage.setItem(TOKEN_KEY, JSON.stringify({ uid, value: r.accessToken, until: r.expiresAt, email: r.email }));
       postToken(r.accessToken);
       return r.accessToken;
     }).finally(() => { this.pending = null; });
     return this.pending;
   }
+
+  /** Google said the token is bad (revoked, or the clock lied): forget it and ask again. */
+  private dropToken() { this.tok = null; localStorage.removeItem(TOKEN_KEY); }
 
   private async call<T>(method: string, url: string, body?: unknown, attempt = 0): Promise<T> {
     const res = await fetch(url, {
@@ -105,7 +133,7 @@ export class RestDrive implements DriveApi {
     if (!res.ok) {
       const e = (json as { error?: { message?: string; errors?: { reason?: string }[] } }).error;
       const reason = e?.errors?.[0]?.reason;
-      if (res.status === 401 && attempt < 1) { this.tok = null; return this.call(method, url, body, attempt + 1); }
+      if (res.status === 401 && attempt < 1) { this.dropToken(); return this.call(method, url, body, attempt + 1); }
       if ((res.status === 429 || res.status >= 500 || (res.status === 403 && /rateLimit/i.test(reason ?? ''))) && attempt < 5) {
         await new Promise((r) => setTimeout(r, Math.min(16_000, 600 * 2 ** attempt) + Math.random() * 300));
         return this.call(method, url, body, attempt + 1);
@@ -248,7 +276,7 @@ export class RestDrive implements DriveApi {
       });
       const url = res.headers.get('location');
       if (res.ok && url) return url;
-      if (res.status === 401 && attempt < 1) { this.tok = null; continue; }
+      if (res.status === 401 && attempt < 1) { this.dropToken(); continue; }
       if ((res.status === 429 || res.status >= 500) && attempt < 5) { await new Promise((r) => setTimeout(r, 800 * 2 ** attempt)); continue; }
       const e = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
       throw new DriveFail(res.status, e.error?.message ?? `Drive answered ${res.status}`);
@@ -256,6 +284,8 @@ export class RestDrive implements DriveApi {
   }
 
   async mediaUrl(f: DFile): Promise<string> {
+    // With the media worker in charge, originals come through its cache (fetched once, kept).
+    if (navigator.serviceWorker?.controller) { await this.token(); return originalUrl(f); }
     const res = await fetch(`${API}/files/${encodeURIComponent(f.id)}?alt=media`, { headers: { authorization: `Bearer ${await this.token()}` } });
     if (!res.ok) throw new DriveFail(res.status, `Could not load ${f.name} (${res.status})`);
     return URL.createObjectURL(await res.blob());
@@ -270,13 +300,19 @@ export class RestDrive implements DriveApi {
 
 let swReady: Promise<ServiceWorkerRegistration | null> | null = null;
 let lastToken = '';
+/** Set by the Drive client: the media worker asks it for a token (a new one when Google refused the old). */
+let tokenSource: ((fresh: boolean) => Promise<string>) | null = null;
+export const setTokenSource = (fn: (fresh: boolean) => Promise<string>) => { tokenSource = fn; };
 
 export function startMediaWorker(): Promise<ServiceWorkerRegistration | null> {
   swReady ??= ('serviceWorker' in navigator
     ? navigator.serviceWorker.register('/media-sw.js', { scope: '/' }).then(async (r) => {
       await navigator.serviceWorker.ready;
-      navigator.serviceWorker.addEventListener('message', (e) => {
-        if (e.data?.type === 'need-token' && e.ports[0]) e.ports[0].postMessage({ token: lastToken });
+      navigator.serviceWorker.addEventListener('message', async (e) => {
+        if (e.data?.type !== 'need-token' || !e.ports[0]) return;
+        const fresh = e.data.stale && e.data.stale === lastToken;
+        if (fresh) forgetDriveToken();
+        e.ports[0].postMessage({ token: tokenSource ? await tokenSource(!!fresh).catch(() => lastToken) : lastToken });
       });
       return r;
     }).catch(() => null)
@@ -302,8 +338,14 @@ export const bytesOf = (f: Pick<DFile, 'size' | 'quotaBytesUsed'>) => Number(f.s
 /** A sharper thumbnail: Drive's links end in `=s220`; ask for the size we draw. */
 export function thumb(f: DFile, px: number): string | undefined {
   if (!f.thumbnailLink) return undefined;
-  return f.thumbnailLink.replace(/=s\d+(-[a-z0-9-]+)?$/i, `=s${Math.round(px)}`);
+  const link = f.thumbnailLink.replace(/=s\d+(-[a-z0-9-]+)?$/i, `=s${Math.round(px)}`);
+  if (link.startsWith('data:') || !navigator.serviceWorker?.controller) return link;
+  // Through the media worker: cached by file, size and version; an expired link is renewed there.
+  return `/__thumb/${encodeURIComponent(f.id)}?s=${Math.round(px)}&v=${encodeURIComponent(f.modifiedTime ?? '')}&u=${encodeURIComponent(link)}`;
 }
+
+/** An original file through the media worker's cache (keyed by file and version). */
+export const originalUrl = (f: DFile) => `/__orig/${encodeURIComponent(f.id)}?v=${encodeURIComponent(f.modifiedTime ?? '')}&size=${bytesOf(f)}`;
 
 export function kindOf(f: Pick<DFile, 'mimeType' | 'name'>): string {
   const m = f.mimeType;

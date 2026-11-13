@@ -8,7 +8,8 @@
   import { nav } from '../lib/router.svelte.ts';
   import { toast } from '../lib/toast.svelte.ts';
   import { editable, isBack, tv } from '../lib/tv.svelte.ts';
-  import { ago, bytesOf, driveLink, duration, failText, isAudio, isFolder, isImage, isMedia, isPdf, isVideo, kindOf, thumb, type DComment, type DFile } from '../lib/gdrive.ts';
+  import { ago, bytesOf, driveLink, duration, failText, isAudio, isFolder, isImage, isMedia, isPdf, isVideo, kindOf, originalUrl, thumb, type DComment, type DFile } from '../lib/gdrive.ts';
+  import { children as cacheChildren } from '../lib/listcache.ts';
   import FileIcon from '../components/drive/FileIcon.svelte';
   import ShareDialog from '../components/drive/ShareDialog.svelte';
   import TopBar from '../components/TopBar.svelte';
@@ -45,7 +46,7 @@
     const d = drive!;
     if (id === 'recent') return d.query(`(mimeType contains 'image/' or mimeType contains 'video/') and trashed = false`, { orderBy: 'modifiedTime desc', max: 500 });
     if (id === 'starred') return (await d.query('starred = true and trashed = false')).filter((f) => !isFolder(f));
-    if (!deep) return (await d.children(id, { orderBy: 'name_natural' })).filter((f) => !isFolder(f));
+    if (!deep) return (await cacheChildren(d, id, (l) => { if (folderId === id && !deep) all = l.filter((f) => !isFolder(f)); }, { orderBy: 'name_natural' })).filter((f) => !isFolder(f));
     // Subfolders too: breadth first, up to 5,000 files.
     const out: DFile[] = [];
     let level = [id];
@@ -111,12 +112,14 @@
         full = next;
       }, () => {});
     }
-    // Warm the next two pictures.
+    // Warm the next two pictures (and the next original, which the media worker then keeps).
     for (const n of [index + 1, index + 2]) {
       const f = list?.[n];
       const src = f && thumb(f, px(f));
       if (src) new Image().src = src;
     }
+    const nx = list?.[index + 1];
+    if (nx && navigator.serviceWorker?.controller && isImage(nx) && SHOWABLE.test(nx.mimeType) && bytesOf(nx) <= 25 * 1024 * 1024) new Image().src = originalUrl(nx);
   });
 
   /** Thumbnail size: the screen's long edge, never bigger than the picture itself (no blurry upscaling). */

@@ -43,6 +43,20 @@ and from then on reads only Drive's change feed. All of My Drive talks to Google
 short-lived token (`driveAccess`); the functions mint one token an hour. It needs full Drive access, asked
 for once, the first time you open My Drive.
 
+**What it costs to run.** No file bytes ever pass through a function: uploads, downloads, previews,
+video and thumbnails go between the browser and Google. Function calls are only for things that need
+the owner's secret or the cap:
+
+| | Function calls |
+|---|---|
+| Owner app (any number of reloads, tabs, folders) | `driveAccess` once an hour (the token is kept in the browser until it expires) |
+| Upload link, N files | `shareInfo` once, then about N/8 `startUploads` and N/20 `finishUploads` (12 files: 5 calls) |
+| Linked accounts | the `sweep` schedule, one query per tick when no share has linked accounts |
+
+The browser caches the rest: folder listings (IndexedDB, refreshed in the background), the size index
+(IndexedDB + Drive's change feed), thumbnails and original pictures (the media service worker's caches,
+keyed by file and version). Signing out clears all of it.
+
 ## Why it works the way it does
 
 Google Drive counts a file against its **owner's** storage. A file someone uploads into a folder you

@@ -382,78 +382,118 @@ export const shareInfo = onCall(api.shareInfo, opts, async (req) => {
   };
 });
 
-export const startUpload = onCall(api.startUpload, opts, async (req) => {
-  const origin = String(req.rawRequest.headers.origin ?? '');
-  if (!ORIGINS.includes(origin)) throw new HttpsError('permission-denied', 'Uploads start from the DriveShare site only');
-  const { shareId, size } = req.data;
-  const s0 = await linkShare(shareId, req.data.secret);
-  if (s0.passwordHash && !checkPassword(req.data.password ?? '', s0.passwordHash)) throw new HttpsError('unauthenticated', 'Wrong password');
-  if (s0.maxFileBytes && size > s0.maxFileBytes) throw new HttpsError('out-of-range', 'The file is larger than this link allows');
-  await expireStale(shareId);
-
+/** Hold room for one file under the cap and open its Drive upload session (owner token, caller's Origin). */
+async function startOne(s0: Share, shareId: string, origin: string, d: Drive, f: { name: string; size: number; mime?: string }, by?: string) {
+  if (s0.maxFileBytes && f.size > s0.maxFileBytes) throw new HttpsError('out-of-range', 'The file is larger than this link allows');
   const upRef = doc(collection(db, uploads, shareId));
   await runTransaction(db, async (tx) => {
     const s = (await tx.get(shareRef(shareId))).data() as Share | undefined;
     if (!s) throw new HttpsError('not-found', 'The link is wrong or was turned off');
-    if (size > room(s.capBytes, s.usedBytes, s.reservedBytes)) throw new HttpsError('resource-exhausted', 'Not enough room left under the cap');
-    tx.update(shareRef(shareId), { reservedBytes: increment(size) } as never);
+    if (f.size > room(s.capBytes, s.usedBytes, s.reservedBytes)) throw new HttpsError('resource-exhausted', 'Not enough room left under the cap');
+    tx.update(shareRef(shareId), { reservedBytes: increment(f.size) } as never);
     tx.set(upRef, {
-      name: cleanName(req.data.name, 500), size, mime: req.data.mime || 'application/octet-stream',
-      ...(req.data.by?.trim() ? { by: req.data.by.trim() } : {}),
+      name: cleanName(f.name, 500), size: f.size, mime: f.mime || 'application/octet-stream',
+      ...(by ? { by } : {}),
       state: 'started', createdAt: now(), expiresAt: Timestamp.fromMillis(Date.now() + RESERVE_MS),
     } as never);
   });
-
   try {
-    const d = await driveFor(s0.ownerUid);
-    const by = req.data.by?.trim();
     const url = await d.startResumable({
-      name: cleanName(req.data.name, 500),
+      name: cleanName(f.name, 500),
       parents: [s0.folderId],
-      ...(req.data.mime ? { mimeType: req.data.mime } : {}),
+      ...(f.mime ? { mimeType: f.mime } : {}),
       description: `Uploaded with DriveShare${by ? ` by ${by}` : ''}`,
       appProperties: { dsUpload: upRef.id, dsShare: shareId },
-    }, size, origin);
+    }, f.size, origin);
     return { uploadId: upRef.id, url };
   } catch (e) {
     await runTransaction(db, async (tx) => {
       tx.update(upRef, { state: 'expired' } as never);
-      tx.update(shareRef(shareId), { reservedBytes: increment(-size) } as never);
+      tx.update(shareRef(shareId), { reservedBytes: increment(-f.size) } as never);
     });
     if (e instanceof HttpsError) throw e;
     throw new HttpsError('unavailable', `Drive did not open the upload: ${(e as Error).message}`);
   }
+}
+
+/** The share behind a link, checked for origin and password, before any upload starts. */
+async function openLink(req: { rawRequest: { headers: Record<string, unknown> } }, shareId: string, secret: string, password?: string) {
+  const origin = String(req.rawRequest.headers.origin ?? '');
+  if (!ORIGINS.includes(origin)) throw new HttpsError('permission-denied', 'Uploads start from the DriveShare site only');
+  const s0 = await linkShare(shareId, secret);
+  if (s0.passwordHash && !checkPassword(password ?? '', s0.passwordHash)) throw new HttpsError('unauthenticated', 'Wrong password');
+  await expireStale(shareId);
+  return { s0, origin };
+}
+
+export const startUpload = onCall(api.startUpload, opts, async (req) => {
+  const { s0, origin } = await openLink(req, req.data.shareId, req.data.secret, req.data.password);
+  const d = await driveFor(s0.ownerUid);
+  return startOne(s0, req.data.shareId, origin, d, req.data, req.data.by?.trim() || undefined);
 });
 
-export const finishUpload = onCall(api.finishUpload, opts, async (req) => {
-  const { shareId, uploadId } = req.data;
-  const s = await linkShare(shareId, req.data.secret);
+/** Up to 20 files in one call: a folder of photos costs a handful of calls, not two per photo. */
+export const startUploads = onCall(api.startUploads, opts, async (req) => {
+  const { s0, origin } = await openLink(req, req.data.shareId, req.data.secret, req.data.password);
+  const d = await driveFor(s0.ownerUid);
+  const by = req.data.by?.trim() || undefined;
+  const out: ({ uploadId: string; url: string } | { error: string; code: string })[] = [];
+  for (const f of req.data.files) {
+    try {
+      out.push(await startOne(s0, req.data.shareId, origin, d, f, by));
+    } catch (e) {
+      out.push({ code: e instanceof HttpsError ? e.code : 'internal', error: (e as Error).message });
+    }
+  }
+  return { uploads: out };
+});
+
+/** Count one finished upload against the cap (idempotent). */
+async function finishOne(s: Share, shareId: string, d: Drive, uploadId: string, fileId?: string): Promise<boolean> {
   if (!validId(uploadId)) throw new HttpsError('not-found', 'Unknown upload');
   const upRef = doc(collection(db, uploads, shareId), uploadId);
   const up = (await getDoc(upRef)).data() as { state: string; size: number } | undefined;
   if (!up) throw new HttpsError('not-found', 'Unknown upload');
-  if (up.state === 'done') return { ok: true, usedBytes: s.usedBytes };
-
-  const d = await driveFor(s.ownerUid);
-  let file = req.data.fileId ? await d.get(req.data.fileId).catch(() => null) : null;
+  if (up.state === 'done') return true;
+  let file = fileId ? await d.get(fileId).catch(() => null) : null;
   if (!file || file.appProperties?.dsUpload !== uploadId) {
     file = (await d.list(`appProperties has { key='dsUpload' and value='${uploadId.replace(/[^\w-]/g, '')}' } and trashed = false`))[0] ?? null;
   }
   if (!file || !file.parents?.includes(s.folderId)) throw new HttpsError('failed-precondition', 'The upload has not reached Drive');
   const size = sizeOf(file);
-  let usedBytes = 0;
   await runTransaction(db, async (tx) => {
     const cur = (await tx.get(upRef)).data() as { state: string; size: number };
-    const sh = (await tx.get(shareRef(shareId))).data() as Share;
-    if (cur.state === 'done') { usedBytes = sh.usedBytes; return; }
-    usedBytes = sh.usedBytes + size;
+    if (cur.state === 'done') return;
     tx.update(shareRef(shareId), {
       usedBytes: increment(size), fileCount: increment(1),
       ...(cur.state === 'started' ? { reservedBytes: increment(-cur.size) } : {}),
     } as never);
     tx.update(upRef, { state: 'done', fileId: file!.id, size, finishedAt: now() } as never);
   });
-  return { ok: true, usedBytes };
+  return true;
+}
+
+export const finishUpload = onCall(api.finishUpload, opts, async (req) => {
+  const s = await linkShare(req.data.shareId, req.data.secret);
+  await finishOne(s, req.data.shareId, await driveFor(s.ownerUid), req.data.uploadId, req.data.fileId);
+  const after = (await getDoc(shareRef(req.data.shareId))).data() as Share;
+  return { ok: true, usedBytes: after.usedBytes };
+});
+
+export const finishUploads = onCall(api.finishUploads, opts, async (req) => {
+  const s = await linkShare(req.data.shareId, req.data.secret);
+  const d = await driveFor(s.ownerUid);
+  const results: { uploadId: string; ok: boolean; error?: string }[] = [];
+  for (const it of req.data.items) {
+    try {
+      await finishOne(s, req.data.shareId, d, it.uploadId, it.fileId);
+      results.push({ uploadId: it.uploadId, ok: true });
+    } catch (e) {
+      results.push({ uploadId: it.uploadId, ok: false, error: (e as Error).message });
+    }
+  }
+  const after = (await getDoc(shareRef(req.data.shareId))).data() as Share;
+  return { results, usedBytes: after.usedBytes, reservedBytes: after.reservedBytes, capBytes: after.capBytes };
 });
 
 // ─── linked accounts: hand files over to the owner ────────────────────────────

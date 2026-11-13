@@ -141,6 +141,31 @@ export const api = defineApi({
     },
     auth: 'none',
   }),
+  startUploads: endpoint({
+    tag: 'Upload link',
+    summary: 'startUpload for up to 20 files in one call (each gets its own Drive session, or an error)',
+    input: f.map({
+      shareId: f.string(),
+      secret: f.string(),
+      password: f.optional(f.string({ max: 200 })),
+      by: f.optional(f.string({ max: 80 })),
+      files: f.array(f.map({ name: f.string({ min: 1, max: 500 }), size: f.number({ int: true, min: 0 }), mime: f.optional(f.string({ max: 200 })) }), { max: 20 }),
+    }),
+    output: f.map({ uploads: f.array(f.map({ uploadId: f.optional(f.string()), url: f.optional(f.string()), error: f.optional(f.string()), code: f.optional(f.string()) })) }),
+    errors: { 'not-found': 'The link is wrong or was turned off', unauthenticated: 'Wrong password' },
+    auth: 'none',
+  }),
+  finishUploads: endpoint({
+    tag: 'Upload link',
+    summary: 'finishUpload for up to 50 files in one call; returns the share\'s usage after',
+    input: f.map({ shareId: f.string(), secret: f.string(), items: f.array(f.map({ uploadId: f.string(), fileId: f.optional(f.string()) }), { max: 50 }) }),
+    output: f.map({
+      results: f.array(f.map({ uploadId: f.string(), ok: f.boolean(), error: f.optional(f.string()) })),
+      usedBytes: f.number(), reservedBytes: f.number(), capBytes: f.number(),
+    }),
+    errors: { 'not-found': 'The link is wrong or was turned off' },
+    auth: 'none',
+  }),
   finishUpload: endpoint({
     tag: 'Upload link',
     summary: 'Count a finished upload against the cap',

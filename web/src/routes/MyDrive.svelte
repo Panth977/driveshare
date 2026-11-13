@@ -10,6 +10,7 @@
   import { nav } from '../lib/router.svelte.ts';
   import { editable, isBack, tv } from '../lib/tv.svelte.ts';
   import { ago, bytesOf, driveLink, duration, failText, isFolder, isMedia, kindOf, thumb, type DFile } from '../lib/gdrive.ts';
+  import { children as cacheChildren, remember } from '../lib/listcache.ts';
   import FileIcon from '../components/drive/FileIcon.svelte';
   import Menu, { type MenuItem } from '../components/drive/Menu.svelte';
   import Prompt from '../components/drive/Prompt.svelte';
@@ -53,10 +54,15 @@
 
   async function load(id: string, force = false): Promise<DFile[]> {
     if (!force && kids.has(id)) return kids.get(id)!;
-    const list = await drive!.children(id);
-    for (const f of list) known.set(f.id, f);
-    kids.set(id, list);
-    colLists[id] = list;
+    const take = (list: DFile[]) => {
+      for (const f of list) known.set(f.id, f);
+      kids.set(id, list);
+      colLists[id] = list;
+      if (id === current && !virtual) items = list;
+    };
+    // Cached copy at once; Drive's answer replaces it in the background when something changed.
+    const list = force ? await drive!.children(id).then((l) => { if (!drive!.demo) void remember(id, l); return l; }) : await cacheChildren(drive!, id, take);
+    take(list);
     return list;
   }
 

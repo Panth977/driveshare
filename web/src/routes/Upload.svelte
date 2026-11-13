@@ -1,6 +1,6 @@
 <script lang="ts">
   import { formatBytes, room } from '@driveshare/backend/shared';
-  import { errorCode, errorText, finishUpload, shareInfo, startUpload } from '../lib/icebase.ts';
+  import { errorCode, errorText, finishUploads, shareInfo, startUploads } from '../lib/icebase.ts';
   import { sendFile } from '../lib/upload.ts';
   import Usage from '../components/Usage.svelte';
 
@@ -8,7 +8,7 @@
   const secret = decodeURIComponent(location.hash.slice(1));
 
   type Info = Awaited<ReturnType<typeof shareInfo>>;
-  interface Item { file: File; sent: number; state: 'waiting' | 'sending' | 'done' | 'failed' | 'cancelled'; error?: string; abort?: AbortController }
+  interface Item { file: File; sent: number; state: 'waiting' | 'sending' | 'done' | 'failed' | 'cancelled'; error?: string; abort?: AbortController; session?: { uploadId: string; url: string }; batch?: Promise<void> }
 
   let info = $state<Info | null>(null);
   let loadError = $state('');
@@ -47,34 +47,87 @@
     }
   }
 
+  // Function calls are batched: one call opens Drive sessions for up to 8 files, one call counts up
+  // to 50 finished files. Bytes always go from this browser straight to Google.
+  const BATCH = 8;
+  const BATCH_BYTES = 2 * 1024 ** 3;
+  const why = (code: string, text: string) => (code === 'resource-exhausted' ? 'Not enough room left under the cap.' : code === 'unauthenticated' ? 'Wrong password.' : code === 'out-of-range' && info?.maxFileBytes ? `Larger than ${formatBytes(info.maxFileBytes)}, the most this link takes per file.` : text);
+
+  function sessionFor(item: Item): Promise<void> {
+    if (item.session) return Promise.resolve();
+    if (item.batch) return item.batch;
+    const group: Item[] = [item];
+    let bytes = item.file.size;
+    for (const i of items) {
+      if (group.length >= BATCH) break;
+      if (i === item || i.state !== 'waiting' || i.session || i.batch) continue;
+      if (bytes + i.file.size > BATCH_BYTES) continue;
+      group.push(i);
+      bytes += i.file.size;
+    }
+    const p = (async () => {
+      try {
+        const r = await startUploads({
+          shareId, secret,
+          ...(password ? { password } : {}),
+          ...(by.trim() ? { by: by.trim() } : {}),
+          files: group.map((i) => ({ name: i.file.name, size: i.file.size, ...(i.file.type ? { mime: i.file.type } : {}) })),
+        });
+        group.forEach((i, k) => {
+          const u = r.uploads[k];
+          if (u?.uploadId && u.url) i.session = { uploadId: u.uploadId, url: u.url };
+          else { i.state = 'failed'; i.error = why(u?.code ?? '', u?.error ?? 'Could not start'); }
+        });
+      } catch (e) {
+        for (const i of group) { i.state = 'failed'; i.error = why(errorCode(e), errorText(e)); }
+      } finally {
+        for (const i of group) i.batch = undefined;
+      }
+    })();
+    for (const i of group) i.batch = p;
+    return p;
+  }
+
+  let finished: { item: Item; uploadId: string; fileId?: string }[] = [];
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  async function flush() {
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+    const batch = finished.splice(0, 50);
+    if (!batch.length) return;
+    try {
+      const r = await finishUploads({ shareId, secret, items: batch.map((b) => ({ uploadId: b.uploadId, ...(b.fileId ? { fileId: b.fileId } : {}) })) });
+      if (info) info = { ...info, usedBytes: r.usedBytes, reservedBytes: r.reservedBytes, capBytes: r.capBytes };
+      for (const res of r.results) if (!res.ok) { const b = batch.find((x) => x.uploadId === res.uploadId); if (b) { b.item.state = 'failed'; b.item.error = res.error ?? 'Not counted'; } }
+    } catch (e) {
+      for (const b of batch) { b.item.state = 'failed'; b.item.error = errorText(e); }
+    }
+    if (finished.length) void flush();
+  }
+  function finish(item: Item, uploadId: string, fileId?: string) {
+    finished.push({ item, uploadId, ...(fileId ? { fileId } : {}) });
+    const busy = items.some((i) => i.state === 'waiting' || i.state === 'sending');
+    if (finished.length >= 20 || !busy) void flush();
+    else flushTimer ??= setTimeout(() => void flush(), 3000);
+  }
+
   async function send(item: Item) {
     if (by.trim()) localStorage.setItem('ds.by', by.trim());
     item.abort = new AbortController();
     try {
       if (info?.maxFileBytes && item.file.size > info.maxFileBytes) throw new Error(`Larger than ${formatBytes(info.maxFileBytes)}, the most this link takes per file.`);
-      const s = await startUpload({
-        shareId, secret, name: item.file.name, size: item.file.size,
-        ...(item.file.type ? { mime: item.file.type } : {}),
-        ...(password ? { password } : {}),
-        ...(by.trim() ? { by: by.trim() } : {}),
-      });
-      void refresh();
-      const r = await sendFile(s.url, item.file, (n) => (item.sent = n), item.abort.signal);
-      await finishUpload({ shareId, secret, uploadId: s.uploadId, ...(r.id ? { fileId: r.id } : {}) });
+      const resumed = !!item.session;
+      await sessionFor(item);
+      if (!item.session) return;
+      const r = await sendFile(item.session.url, item.file, (n) => (item.sent = n), item.abort.signal, resumed);
       item.state = 'done';
       item.sent = item.file.size;
+      finish(item, item.session.uploadId, r.id);
     } catch (e) {
       if ((e as Error).name === 'AbortError') { item.state = 'cancelled'; return; }
       item.state = 'failed';
-      const code = errorCode(e);
-      item.error = code === 'resource-exhausted' ? 'Not enough room left under the cap.' : code === 'unauthenticated' ? 'Wrong password.' : errorText(e);
-    } finally {
-      void refresh();
+      item.error = why(errorCode(e), errorText(e));
+      if (/expired/.test(item.error)) item.session = undefined;
     }
-  }
-
-  async function refresh() {
-    try { info = await shareInfo({ shareId, secret }); } catch { /* keep the last one */ }
   }
 
   function retry(i: Item) { i.state = 'waiting'; i.sent = 0; i.error = undefined; pump(); }
