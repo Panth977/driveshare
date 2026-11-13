@@ -5,7 +5,8 @@
   import { account } from '../lib/account.svelte.ts';
   import { mydrive } from '../lib/mydrive.svelte.ts';
   import { sizes } from '../lib/sizes.svelte.ts';
-  import { uploader, readDrop, fromInput } from '../lib/uploader.svelte.ts';
+  import { transfers } from '../lib/transfer.svelte.ts';
+  import { canPickFolder, fromDrop, fromFileList, fromFiles, fromHandle, pickFolder } from '../lib/localfs.ts';
   import { toast } from '../lib/toast.svelte.ts';
   import { nav } from '../lib/router.svelte.ts';
   import { editable, isBack, tv } from '../lib/tv.svelte.ts';
@@ -111,7 +112,7 @@
 
   $effect(() => { if (view === 'columns') for (const p of path) void load(p.id); });
 
-  uploader.onFinished = () => { void refresh(true); void mydrive.refreshQuota(); };
+  transfers.onFinished = () => { void refresh(true); void mydrive.refreshQuota(); };
 
   // ── sizes and sorting ──
   const folderTotals = (f: DFile) => (isFolder(f) ? sizes.of(f.id) : undefined);
@@ -207,7 +208,7 @@
       { label: 'Share link…', key: 'S', run: () => (sharing = f), sep: true },
       { label: f.starred ? 'Remove star' : 'Star', key: '*', run: () => void star(f) },
       { label: 'Rename…', key: 'F2', run: () => rename(f) },
-      ...(folder ? [{ label: 'Upload into this folder…', run: () => { uploadTarget = f.id; folderInput?.click(); } }, { label: 'Sync a local folder into this…', run: () => { syncTarget = { id: f.id, name: f.name }; syncInput?.click(); } }] : []),
+      ...(folder ? [{ label: 'Upload a folder into this…', run: () => { uploadTarget = f.id; void uploadFolder(); } }, { label: 'Sync a local folder into this…', run: () => void syncFolder({ id: f.id, name: f.name }) }] : []),
       { label: 'Open in Google Drive', run: () => window.open(driveLink(f), '_blank', 'noopener'), sep: true },
       { label: 'Move to bin', key: 'Del', danger: true, run: () => askTrash(f), sep: true },
     ];
@@ -223,35 +224,59 @@
     menu = { x: e.clientX, y: e.clientY, items: [
       { label: 'New folder…', run: newFolder },
       { label: 'Upload files…', run: () => { uploadTarget = current; filesInput?.click(); } },
-      { label: 'Upload a folder…', run: () => { uploadTarget = current; folderInput?.click(); } },
-      { label: 'Sync a local folder into here…', run: () => { syncTarget = { id: current, name: title }; syncInput?.click(); } },
+      { label: 'Upload a folder…', run: () => void uploadFolder() },
+      { label: 'Sync a local folder into here…', run: () => void syncFolder() },
       { label: 'Preview everything here', run: () => preview(current), sep: true },
       { label: 'Refresh', run: () => void refresh(true) },
     ] };
   }
 
-  // ── uploads ──
+  // ── uploads and syncs (lib/transfer.svelte.ts streams them; nothing is listed up front) ──
   let uploadTarget = '';
-  function startUpload(list: ReturnType<typeof fromInput>) {
-    const target = uploadTarget || current;
-    uploadTarget = '';
-    if (!list.length || !drive || !target) return;
-    if (drive.demo) { toast.show('Uploads are off in the demo.'); return; }
-    void uploader.add(drive, target, list);
+  const target = (t?: { id: string; name: string }) => (t?.id ? t : { id: uploadTarget || current, name: title });
+  function allowed(): boolean {
+    if (!drive) return false;
+    if (drive.demo) { toast.show('Uploads are off in the demo.'); return false; }
+    if (transfers.busy) toast.show('Another upload or sync is running; this one starts after it.');
+    return true;
   }
-  function startSync(list: ReturnType<typeof fromInput>) {
-    const t = syncTarget.id ? syncTarget : { id: current, name: title };
-    syncTarget = { id: '', name: '' };
-    if (!list.length || !drive || !t.id) return;
-    if (drive.demo) { toast.show('Uploads are off in the demo.'); return; }
-    void uploader.syncFolder(drive, t.id, t.name, list);
+  /** Upload a whole folder (Chrome/Edge: the folder picker, which can resume after a reload). */
+  async function uploadFolder() {
+    const t = target(); uploadTarget = '';
+    if (!t.id || !allowed()) return;
+    if (!canPickFolder()) { pendingInput = { kind: 'upload', t }; folderInput?.click(); return; }
+    const h = await pickFolder().catch((e) => { toast.show((e as Error).message); return null; });
+    if (h) transfers.upload(drive!, t.id, t.name, fromHandle(h), h);
+  }
+  async function syncFolder(t0?: { id: string; name: string }) {
+    const t = target(t0); syncTarget = { id: '', name: '' };
+    if (!t.id || !allowed()) return;
+    if (!canPickFolder()) { pendingInput = { kind: 'sync', t }; syncInput?.click(); return; }
+    const h = await pickFolder().catch((e) => { toast.show((e as Error).message); return null; });
+    if (h) transfers.sync(drive!, t.id, t.name, fromHandle(h), h);
+  }
+  let pendingInput: { kind: 'upload' | 'sync'; t: { id: string; name: string } } | null = null;
+  function fromInputDir(files: FileList | null) {
+    const p = pendingInput ?? { kind: 'upload' as const, t: target() };
+    pendingInput = null;
+    const dir = files ? fromFileList(files) : null;
+    if (!dir || !drive) return;
+    if (p.kind === 'sync') transfers.sync(drive, p.t.id, p.t.name, dir);
+    else transfers.upload(drive, p.t.id, p.t.name, dir);
+  }
+  function uploadFiles(files: FileList | null) {
+    const t = target(); uploadTarget = '';
+    if (!files?.length || !t.id || !allowed()) return;
+    transfers.upload(drive!, t.id, t.name, fromFiles([...files]));
   }
 
   async function drop(e: DragEvent) {
     e.preventDefault();
     over = false;
-    if (!e.dataTransfer || !current) return;
-    startUpload(await readDrop(e.dataTransfer));
+    if (!e.dataTransfer || !current || !allowed()) return;
+    const got = await fromDrop(e.dataTransfer);
+    for (const d of got.dirs) transfers.upload(drive!, current, title, d.dir, d.handle);
+    if (got.files.length) transfers.upload(drive!, current, title, fromFiles(got.files));
   }
 
   // ── keyboard ──
@@ -428,9 +453,9 @@
         {#if current}
           <button class="ghost" onclick={() => preview(current)} title="Preview everything here, one by one"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>Preview</button>
           <button class="ghost" onclick={newFolder}>New folder</button>
-          <button onclick={() => { syncTarget = { id: current, name: title }; syncInput?.click(); }} title="Pick a folder on this computer: whatever is missing here gets uploaded">
+          <button onclick={() => void syncFolder()} title="Pick a folder on this computer: whatever is missing here gets uploaded">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8M4 4v4h4M4 13a8 8 0 0 0 14.3 4.9L20 16M20 20v-4h-4"/></svg>Sync folder</button>
-          <button class="primary" onclick={() => folderInput?.click()}>
+          <button class="primary" onclick={() => void uploadFolder()}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 19V5M5 12l7-7 7 7"/></svg>Upload folder</button>
           <button class="ghost" onclick={() => filesInput?.click()}>Files</button>
         {/if}
@@ -565,9 +590,9 @@
     </section>
   </div>
 
-  <input type="file" multiple hidden bind:this={filesInput} onchange={(e) => { startUpload(fromInput(e.currentTarget.files)); e.currentTarget.value = ''; }} />
-  <input type="file" multiple hidden bind:this={syncInput} webkitdirectory onchange={(e) => { startSync(fromInput(e.currentTarget.files)); e.currentTarget.value = ''; }} />
-  <input type="file" multiple hidden bind:this={folderInput} webkitdirectory onchange={(e) => { startUpload(fromInput(e.currentTarget.files)); e.currentTarget.value = ''; }} />
+  <input type="file" multiple hidden bind:this={filesInput} onchange={(e) => { uploadFiles(e.currentTarget.files); e.currentTarget.value = ''; }} />
+  <input type="file" multiple hidden bind:this={syncInput} webkitdirectory onchange={(e) => { fromInputDir(e.currentTarget.files); e.currentTarget.value = ''; }} />
+  <input type="file" multiple hidden bind:this={folderInput} webkitdirectory onchange={(e) => { fromInputDir(e.currentTarget.files); e.currentTarget.value = ''; }} />
 {/if}
 
 {#if menu}<Menu x={menu.x} y={menu.y} items={menu.items} onclose={() => { menu = null; focusSel(); }} />{/if}

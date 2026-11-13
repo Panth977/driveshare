@@ -38,11 +38,17 @@ tap Approve. The TV gets its own session.
 Drive (same name, same size, same place) are skipped, and a half-sent file goes on from the last byte
 Drive has (its resumable session is kept in the browser for six days).
 
-**Sync folder.** Pick a folder on your computer and it is compared with the Drive folder you are in
-(its contents, folder by folder): new files are uploaded, files whose size changed get the new contents
-as a new version of the same Drive file, files already there are left alone, and nothing in Drive is
-deleted. The panel shows the comparison (already in Drive · new · changed) and the upload progress.
-Syncing again after a stop carries on where it left off.
+**Sync folder and uploads, for millions of files and days of work.** Pick a folder on your computer
+(Chrome/Edge use the folder picker) and its contents are compared with the Drive folder you are in, one
+directory at a time: new files are uploaded, files whose size changed get the new contents as a new
+version of the same Drive file, files already there are left alone, and nothing in Drive is deleted.
+Upload folder does the same into a folder of the same name. The folder is never listed in one go:
+the engine (`web/src/lib/transfer.svelte.ts`) keeps at most 300 files waiting, sends small files in one
+request and big ones as resumable uploads, slows down when Google says so, and writes down every folder
+that is finished. Stopped, reloaded or crashed? **Resume** (or pick the same folder again) skips the
+finished folders and carries half-sent files on. Google lets one account create only a few files a
+second (about 4/s measured), so a million small files take about three days; big files go as fast as
+the connection. Keep the tab open (it may be in the background; the screen is kept awake).
 
 **How sizes work.** Drive never says how big a folder is. The browser lists the whole Drive once
 (many queries in parallel; ~170,000 items take about five minutes), keeps a compact copy in IndexedDB,

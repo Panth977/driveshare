@@ -45,3 +45,15 @@ class MyDrive {
 }
 
 export const mydrive = new MyDrive();
+
+// Dev-only load test: window.__dsStress(files, { latency, rateLimit }) syncs a synthetic folder into
+// an in-memory Drive (twice in a row shows the "already in Drive" path).
+if (demoMode) {
+  (window as unknown as Record<string, unknown>).__dsStress = async (files: number, o: { latency?: number; rateLimit?: number; again?: boolean } = {}) => {
+    const [{ StressDrive, synthDir }, { transfers }] = await Promise.all([import('./stress.ts'), import('./transfer.svelte.ts')]);
+    const w = window as unknown as { __dsStressDrive?: InstanceType<typeof StressDrive> };
+    const d = o.again && w.__dsStressDrive ? w.__dsStressDrive : (w.__dsStressDrive = new StressDrive(o.latency ?? 3, o.rateLimit ?? 0));
+    d.latency = o.latency ?? d.latency; d.rateLimit = o.rateLimit ?? 0;
+    transfers.sync(d, 'root', 'Stress Drive', synthDir(files));
+  };
+}

@@ -110,6 +110,7 @@ export class DemoDrive implements DriveApi {
   async shareAnyone(fid: string) { this.perms.set(fid, [{ id: 'anyone', type: 'anyone', role: 'reader' }]); return `https://drive.google.com/file/d/${fid}/view?usp=sharing`; }
   async unshareAnyone(fid: string) { this.perms.delete(fid); }
   async startUpload(): Promise<string> { throw new Error('Uploads are off in the demo'); }
+  async uploadSmall(): Promise<DFile> { throw new Error('Uploads are off in the demo'); }
   async mediaUrl(f: DFile) { return art(f.name.length * 7 + f.id.length, 1600, 1200, f.name); }
   streamUrl() { return ''; }
 }

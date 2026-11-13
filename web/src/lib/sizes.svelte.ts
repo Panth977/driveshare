@@ -140,10 +140,29 @@ class SizeIndex {
 
   /** Apply a change we made ourselves right away (trash, upload, new folder), before the feed shows it. */
   local(f: DFile | { id: string; removed: true }): void {
-    if ('removed' in f) this.entries.delete(f.id);
-    else this.entries.set(f.id, entryOf(f));
-    this.sum();
+    if ('removed' in f) {
+      this.entries.delete(f.id);
+      this.sumSoon ??= setTimeout(() => { this.sumSoon = null; this.sum(); }, 3000);
+      return;
+    }
+    const known = this.entries.has(f.id);
+    const e = entryOf(f);
+    this.entries.set(f.id, e);
+    if (known) { this.sumSoon ??= setTimeout(() => { this.sumSoon = null; this.sum(); }, 3000); return; }
+    // A new file or folder (uploads add thousands): add it to its ancestors only, no full recount.
+    let p: string | undefined = e[0];
+    const seen = new Set<string>([f.id]);
+    while (p && !seen.has(p)) {
+      seen.add(p);
+      let x = this.totals.get(p);
+      if (!x) this.totals.set(p, (x = { bytes: 0, files: 0, folders: 0 }));
+      if (e[2]) x.folders++; else { x.files++; x.bytes += e[1]; }
+      p = this.entries.get(p)?.[0];
+    }
+    this.bumpSoon ??= setTimeout(() => { this.bumpSoon = null; this.version++; }, 1500);
   }
+  private bumpSoon: ReturnType<typeof setTimeout> | null = null;
+  private sumSoon: ReturnType<typeof setTimeout> | null = null;
 
   private async save() {
     await kvSet('index', { owner: this.owner, token: this.changeToken, at: this.builtAt, entries: [...this.entries] }).catch(() => {});

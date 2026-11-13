@@ -71,6 +71,11 @@ export interface DriveApi {
   /** Open a resumable upload; the browser then PUTs chunks to the URL it returns. */
   /** `replace`: put new contents into this existing file (a new revision) instead of making a file. */
   startUpload(meta: { name: string; parents: string[]; mimeType?: string; modifiedTime?: string }, size: number, replace?: string): Promise<string>;
+  /**
+   * A small file in one request (multipart), or its new contents into `replace`. Throws DriveFail;
+   * the caller retries (rate limits are common when sending thousands of files).
+   */
+  uploadSmall(meta: { name: string; parents: string[]; mimeType?: string; modifiedTime?: string }, file: Blob, replace?: string, signal?: AbortSignal): Promise<DFile>;
   /** A blob: or http URL that shows the file's bytes (images, PDFs). */
   mediaUrl(f: DFile): Promise<string>;
   /** A URL a <video>/<audio> element can stream with Range requests. */
@@ -275,9 +280,27 @@ export class RestDrive implements DriveApi {
       const url = res.headers.get('location');
       if (res.ok && url) return url;
       if (res.status === 401 && attempt < 1) { this.dropToken(); continue; }
-      if ((res.status === 429 || res.status >= 500) && attempt < 5) { await new Promise((r) => setTimeout(r, 800 * 2 ** attempt)); continue; }
-      const e = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
-      throw new DriveFail(res.status, e.error?.message ?? `Drive answered ${res.status}`);
+      if (res.status >= 500 && attempt < 3) { await new Promise((r) => setTimeout(r, 800 * 2 ** attempt)); continue; }
+      const e = (await res.json().catch(() => ({}))) as { error?: { message?: string; errors?: { reason?: string }[] } };
+      throw new DriveFail(res.status, e.error?.message ?? `Drive answered ${res.status}`, e.error?.errors?.[0]?.reason);
+    }
+  }
+
+  async uploadSmall(meta: { name: string; parents: string[]; mimeType?: string; modifiedTime?: string }, file: Blob, replace?: string, signal?: AbortSignal): Promise<DFile> {
+    const boundary = `ds${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+    const head = replace ? { ...(meta.modifiedTime ? { modifiedTime: meta.modifiedTime } : {}) } : meta;
+    const body = new Blob([
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(head)}\r\n--${boundary}\r\nContent-Type: ${meta.mimeType || 'application/octet-stream'}\r\n\r\n`,
+      file,
+      `\r\n--${boundary}--`,
+    ]);
+    const url = replace ? `${UPLOAD}/files/${encodeURIComponent(replace)}?uploadType=multipart&fields=id,name,size,parents,mimeType` : `${UPLOAD}/files?uploadType=multipart&fields=id,name,size,parents,mimeType`;
+    for (let attempt = 0; ; attempt++) {
+      const res = await fetch(url, { method: replace ? 'PATCH' : 'POST', headers: { authorization: `Bearer ${await this.token()}`, 'content-type': `multipart/related; boundary=${boundary}` }, body, ...(signal ? { signal } : {}) });
+      if (res.ok) return (await res.json()) as DFile;
+      if (res.status === 401 && attempt < 1) { this.dropToken(); continue; }
+      const e = (await res.json().catch(() => ({}))) as { error?: { message?: string; errors?: { reason?: string }[] } };
+      throw new DriveFail(res.status, e.error?.message ?? `Drive answered ${res.status}`, e.error?.errors?.[0]?.reason);
     }
   }
 
@@ -324,6 +347,11 @@ function postToken(token: string) {
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────
+
+/** Drive asks us to slow down (too many writes): 429, or 403 with a rate-limit reason. */
+export const isRateLimit = (e: unknown) => e instanceof DriveFail && (e.status === 429 || (e.status === 403 && /rate|quota/i.test(e.reason ?? e.message)));
+/** Worth trying again later (network, server, rate limit). */
+export const isTransient = (e: unknown) => !(e instanceof DriveFail) || e.status >= 500 || e.status === 408 || isRateLimit(e);
 
 export const isFolder = (f: Pick<DFile, 'mimeType'>) => f.mimeType === FOLDER_MIME;
 export const isImage = (f: Pick<DFile, 'mimeType'>) => f.mimeType.startsWith('image/');
