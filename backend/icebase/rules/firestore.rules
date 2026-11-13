@@ -9,6 +9,11 @@ service cloud.firestore {
         allow read, write: if false;
       }
     }
+    // A TV watches its own sign-in request (the id is a random 20-char key; the doc holds no secret).
+    match /tvLogins/{id} {
+      allow get: if resource.data.expiresAt > request.time;
+      allow list, write: if false;
+    }
     match /shares/{shareId} {
       allow read: if request.auth != null && resource.data.ownerUid == request.auth.uid;
       allow write: if false;

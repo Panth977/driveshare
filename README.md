@@ -18,6 +18,31 @@ Two ways in:
 The cap counts everything in the folder. Uploads that would go over it are refused; files from linked
 accounts that would go over it stay with their sender.
 
+## The owner's app
+
+Three tabs, made for a laptop and for a TV browser (TV mode: bigger interface, D-pad navigation; on by
+default in TV browsers, a toggle in the top bar elsewhere).
+
+- **Shares**: the capped upload links above, plus everything in your Drive shared "anyone with the link".
+- **My Drive**: a Finder for your whole Drive. List, grid and column views; every folder shows its real
+  size and how many files and folders it holds; right-click (or hold OK on a remote) for open, preview,
+  share link, star, rename, upload into, move to bin. Drop files or whole folders to upload them.
+- **Viewer**: a folder's files one by one. Arrow keys step, `Del` bins (with Undo), `C` comments (saved on
+  the file in Drive), `S` makes a share link with a QR code, `I` details, `F` full screen. Videos stream.
+
+**Signing in on a TV**: the TV shows a QR code; scan it with a phone that is signed in, check the code,
+tap Approve. The TV gets its own session.
+
+**Folder uploads that survive stopping.** Drop the same folder again and it carries on: files already in
+Drive (same name, same size, same place) are skipped, and a half-sent file goes on from the last byte
+Drive has (its resumable session is kept in the browser for six days).
+
+**How sizes work.** Drive never says how big a folder is. The browser lists the whole Drive once
+(many queries in parallel; ~170,000 items take about five minutes), keeps a compact copy in IndexedDB,
+and from then on reads only Drive's change feed. All of My Drive talks to Google from the browser with a
+short-lived token (`driveAccess`); the functions mint one token an hour. It needs full Drive access, asked
+for once, the first time you open My Drive.
+
 ## Why it works the way it does
 
 Google Drive counts a file against its **owner's** storage. A file someone uploads into a folder you
@@ -40,7 +65,7 @@ stays inside the Firebase free tier for functions; you pay for nothing but your 
 
 - [IceBase](https://jsr.io/@panth977/icebase) in Firebase mode: schema, typed callables, rules, deploy.
 - Firestore keeps shares, upload reservations and encrypted Google refresh tokens. Files live only in Drive.
-- Web: Svelte 5 + Vite. Licence: Apache-2.0.
+- Web: Svelte 5 + Vite. Try the views without an account: `npm run dev`, open `http://localhost:5191/drive?demo`. Licence: Apache-2.0.
 
 ```
 backend/
@@ -51,7 +76,14 @@ backend/
   icebase/rules/         Firestore rules (clients read only; every write is a function)
   functions/src/         index.ts (functions), drive.ts (Drive REST), sweep.ts (hand-over)
 web/src/
-  routes/Admin.svelte    owner dashboard   (/)
+  routes/Home.svelte     owner app: tabs   (/, /drive, /view)
+  routes/Shares.svelte   upload shares + shared links
+  routes/MyDrive.svelte  the Finder        (/drive/<folder>)
+  routes/Viewer.svelte   one-by-one viewer (/view/<folder>/<file>)
+  routes/TvApprove.svelte  phone side of TV sign-in (/tv#<id>.<secret>)
+  lib/gdrive.ts          Drive REST from the browser; public/media-sw.js streams video with the token
+  lib/sizes.svelte.ts    folder sizes (full listing + change feed, IndexedDB)
+  lib/uploader.svelte.ts resumable folder uploads
   routes/Upload.svelte   upload page       (/s/<share>#<key>)
   routes/Link.svelte     linked accounts   (/link)
 test/                    vitest: sweep against an in-memory Drive, helpers

@@ -105,7 +105,7 @@
         ondragleave={() => (over = false)}
         ondrop={(e) => { e.preventDefault(); over = false; add(e.dataTransfer?.files ?? null); }}>
         <p style="margin:0 0 10px; font-size:16px">Drop files here</p>
-        <label class="btn primary" style="display:inline-flex; color:#f6f2ea">Choose files<input type="file" multiple hidden onchange={(e) => { add(e.currentTarget.files); e.currentTarget.value = ''; }} /></label>
+        <label class="btn primary" style="display:inline-flex">Choose files<input type="file" multiple hidden onchange={(e) => { add(e.currentTarget.files); e.currentTarget.value = ''; }} /></label>
         <p class="small muted" style="margin:10px 0 0">{formatBytes(left)} left{queued ? ` · ${formatBytes(queued)} still to send` : ''}</p>
       </div>
       {#if info.folderUrl}<p class="small" style="margin:0"><a href={info.folderUrl} target="_blank" rel="noopener">See the folder in Google Drive</a></p>{/if}
@@ -119,7 +119,7 @@
               <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:60%">{i.file.name}</span>
               <span class="muted">
                 {#if i.state === 'sending'}{formatBytes(i.sent)} / {formatBytes(i.file.size)} · {pct(i)}% <button class="link small" onclick={() => i.abort?.abort()}>Cancel</button>
-                {:else if i.state === 'done'}<span style="color:var(--accent)">Sent · {formatBytes(i.file.size)}</span>
+                {:else if i.state === 'done'}<span style="color:var(--good)">Sent · {formatBytes(i.file.size)}</span>
                 {:else if i.state === 'failed'}<span class="error">{i.error}</span> <button class="link small" onclick={() => retry(i)}>Retry</button>
                 {:else if i.state === 'cancelled'}Cancelled <button class="link small" onclick={() => retry(i)}>Retry</button>
                 {:else}Waiting{/if}

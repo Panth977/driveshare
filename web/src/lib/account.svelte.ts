@@ -99,6 +99,11 @@ class AccountState {
     }
   }
 
+  /** Sign in with a session token from the backend (a TV approved from a phone). */
+  async signInWithToken(token: string): Promise<void> {
+    await signInWithCustomToken(auth, token);
+  }
+
   async signOut(): Promise<void> {
     await signOut(auth);
   }

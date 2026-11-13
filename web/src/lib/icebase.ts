@@ -21,6 +21,10 @@ export const sweepNow = callable(fns, api.sweepNow);
 export const shareInfo = callable(fns, api.shareInfo);
 export const startUpload = callable(fns, api.startUpload);
 export const finishUpload = callable(fns, api.finishUpload);
+export const driveAccess = callable(fns, api.driveAccess);
+export const tvStart = callable(fns, api.tvStart);
+export const tvApprove = callable(fns, api.tvApprove);
+export const tvClaim = callable(fns, api.tvClaim);
 
 /** A readable message from a callable error. */
 export function errorText(e: unknown): string {

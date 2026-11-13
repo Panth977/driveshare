@@ -156,7 +156,7 @@
         <h3>From linked accounts</h3>
         <p class="small muted" style="margin:0">Last run: {when(s.lastSweep)}{s.sweepLeft ? ` · ${s.sweepLeft} files still waiting (next run continues)` : ''}</p>
         {#if moves.length === 0}<p class="small muted">Nothing moved yet.</p>{:else}
-          <table><tbody>{#each moves as m (m.id)}<tr><td>{m.name}<div class="small muted">{m.from}</div></td><td class="small">{formatBytes(m.size)}</td><td class="small" title={m.error ?? ''} style:color={m.state === 'moved' ? 'var(--accent)' : 'var(--warn)'}>{m.state}</td></tr>{/each}</tbody></table>
+          <table><tbody>{#each moves as m (m.id)}<tr><td>{m.name}<div class="small muted">{m.from}</div></td><td class="small">{formatBytes(m.size)}</td><td class="small" title={m.error ?? ''} style:color={m.state === 'moved' ? 'var(--good)' : 'var(--warn)'}>{m.state}</td></tr>{/each}</tbody></table>
         {/if}
       </div>
     </div>

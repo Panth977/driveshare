@@ -1,7 +1,7 @@
 // DriveShare functions. Bytes never pass through here: uploads go from the browser straight to
 // Google (a resumable session opened with the owner's token), and the linked-account sweep only
 // makes Drive API calls. Each upload costs two small function calls; the sweep one per schedule tick.
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { HttpsError, onCall, onSchedule } from '@panth977/icebase-server/functions';
 import { getAdminAuth, getAdminFirestore, initializeAdminApp } from '@panth977/icebase-server/admin';
 import {
@@ -9,7 +9,7 @@ import {
 } from '@panth977/icebase/firestore';
 import config from '../../icebase.config.ts';
 import { api } from '../../icebase/api.ts';
-import { drive, shares, transfers, uploads, users } from '../../icebase/schema.ts';
+import { drive, shares, transfers, tvLogins, uploads, users } from '../../icebase/schema.ts';
 import { ORIGINS, REGION, deployment } from '../../deployment.ts';
 import { DRIVE_FULL_SCOPE, RESERVE_MS, ROOT_FOLDER, cleanName, hasScope, room } from '../../shared.ts';
 import { Drive, DriveError, folderUrl, sizeOf } from './drive.ts';
@@ -63,9 +63,9 @@ const driveDoc = (uid: string) => doc(collection(db, drive, uid), 'drive');
 const userRef = (uid: string) => doc(collection(db, users), uid);
 const shareRef = (id: string) => doc(collection(db, shares), id);
 
-/** A Drive client acting as this account (refresh token → access token). */
-async function driveFor(uid: string): Promise<Drive> {
-  const stored = (await getDoc(driveDoc(uid))).data() as { refreshToken?: string } | undefined;
+/** A fresh Google access token for this account (refresh token → access token). */
+async function accessFor(uid: string): Promise<{ token: string; expiresIn: number; scope: string }> {
+  const stored = (await getDoc(driveDoc(uid))).data() as { refreshToken?: string; scope?: string } | undefined;
   if (!stored?.refreshToken) throw new HttpsError('failed-precondition', 'drive-not-connected');
   const t = await googleToken({ refresh_token: decrypt(stored.refreshToken), grant_type: 'refresh_token' });
   if (t.error === 'invalid_grant') {
@@ -73,7 +73,12 @@ async function driveFor(uid: string): Promise<Drive> {
     throw new HttpsError('failed-precondition', 'drive-not-connected');
   }
   if (!t.access_token) throw new HttpsError('unavailable', t.error_description ?? t.error ?? 'Google token refresh failed');
-  return new Drive(t.access_token);
+  return { token: t.access_token, expiresIn: t.expires_in ?? 3600, scope: t.scope ?? stored.scope ?? '' };
+}
+
+/** A Drive client acting as this account. */
+async function driveFor(uid: string): Promise<Drive> {
+  return new Drive((await accessFor(uid)).token);
 }
 
 // ─── who may do what ──────────────────────────────────────────────────────────
@@ -165,6 +170,68 @@ export const googleSignIn = onCall(api.googleSignIn, opts, async (req) => {
 
   const token = await auth.createCustomToken(uid, { role });
   return { token, role, driveConnected, scope };
+});
+
+// ─── My Drive: the browser talks to Drive itself ──────────────────────────────
+
+export const driveAccess = onCall(api.driveAccess, opts, async (req) => {
+  const uid = admin(req);
+  const a = await accessFor(uid);
+  if (!a.scope.split(' ').includes(DRIVE_FULL_SCOPE)) throw new HttpsError('failed-precondition', 'needs-full-drive');
+  return { accessToken: a.token, expiresAt: Date.now() + (a.expiresIn - 120) * 1000, email: String(req.auth!.token.email ?? '') };
+});
+
+// ─── TV sign-in: show a QR code, approve on the phone ────────────────────────
+
+const TV_MS = 10 * 60 * 1000;
+const sha = (s: string) => createHash('sha256').update(s).digest('base64url');
+const tvRef = (id: string) => doc(collection(db, tvLogins), id);
+const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+export const tvStart = onCall(api.tvStart, opts, async (req) => {
+  const origin = String(req.rawRequest.headers.origin ?? '');
+  if (!ORIGINS.includes(origin)) throw new HttpsError('permission-denied', 'TV sign-in starts from the DriveShare site only');
+  const ref = doc(collection(db, tvLogins));
+  const secret = randomBytes(24).toString('base64url');
+  const code = Array.from(randomBytes(4), (b) => CODE_CHARS[b % CODE_CHARS.length]).join('');
+  const expiresAt = Date.now() + TV_MS;
+  await setDoc(ref, {
+    secretHash: sha(secret), code, state: 'waiting',
+    ...(req.data.device ? { device: req.data.device.slice(0, 200) } : {}),
+    createdAt: now(), expiresAt: Timestamp.fromMillis(expiresAt),
+  } as never);
+  return { id: ref.id, secret, code, expiresAt };
+});
+
+async function tvRequest(id: string, secret: string) {
+  if (!validId(id)) return null;
+  const t = (await getDoc(tvRef(id))).data() as { secretHash: string; code: string; state: string; device?: string; uid?: string; expiresAt: Timestamp } | undefined;
+  if (!t || !sameSecret(t.secretHash, sha(secret))) return null;
+  return t;
+}
+
+export const tvApprove = onCall(api.tvApprove, opts, async (req) => {
+  const uid = admin(req);
+  const t = await tvRequest(req.data.id, req.data.secret);
+  if (!t || t.state !== 'waiting' || t.expiresAt.toMillis() < Date.now()) throw new HttpsError('not-found', 'The QR code expired or was used; show a new one on the TV');
+  await updateDoc(tvRef(req.data.id), { state: 'approved', uid, email: String(req.auth!.token.email ?? '') } as never);
+  return { ok: true, code: t.code, ...(t.device ? { device: t.device } : {}) };
+});
+
+export const tvClaim = onCall(api.tvClaim, opts, async (req) => {
+  const t = await tvRequest(req.data.id, req.data.secret);
+  if (!t || t.expiresAt.toMillis() < Date.now()) return { state: 'expired' as const };
+  if (t.state !== 'approved' || !t.uid) return { state: t.state as 'waiting' | 'used' };
+  let won = false;
+  await runTransaction(db, async (tx) => {
+    const cur = (await tx.get(tvRef(req.data.id))).data() as { state: string } | undefined;
+    if (cur?.state !== 'approved') return;
+    tx.update(tvRef(req.data.id), { state: 'used' } as never);
+    won = true;
+  });
+  if (!won) return { state: 'used' as const };
+  const u = (await getDoc(userRef(t.uid))).data() as { role?: 'admin' | 'linked' } | undefined;
+  return { state: 'approved' as const, token: await auth.createCustomToken(t.uid, { role: u?.role ?? 'admin' }) };
 });
 
 export const linkedShares = onCall(api.linkedShares, opts, async (req) => {

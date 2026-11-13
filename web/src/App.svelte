@@ -1,17 +1,21 @@
 <script lang="ts">
-  import Admin from './routes/Admin.svelte';
+  import Home from './routes/Home.svelte';
   import Upload from './routes/Upload.svelte';
   import Link from './routes/Link.svelte';
+  import TvApprove from './routes/TvApprove.svelte';
+  import { router } from './lib/router.svelte.ts';
+  import { installSpatialNav } from './lib/tv.svelte.ts';
 
-  let path = $state(location.pathname);
-  addEventListener('popstate', () => (path = location.pathname));
-  const upload = $derived(/^\/s\/([\w-]+)\/?$/.exec(path));
+  installSpatialNav();
+  const upload = $derived(/^\/s\/([\w-]+)\/?$/.exec(router.path));
 </script>
 
 {#if upload}
   <Upload shareId={upload[1]!} />
-{:else if path.startsWith('/link')}
+{:else if router.path.startsWith('/link')}
   <Link />
+{:else if router.path === '/tv'}
+  <TvApprove />
 {:else}
-  <Admin />
+  <Home />
 {/if}

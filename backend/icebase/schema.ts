@@ -94,4 +94,26 @@ export const transfers = collection('shares/{shareId}/transfers', {
   indexes: [index('at')],
 });
 
-export const schema = defineSchema({ users, drive, shares, uploads, transfers });
+/**
+ * A TV (or any browser) asking to be signed in from a phone. The TV shows a QR code with the id and a
+ * secret; the owner opens it on the phone and approves; the TV then trades id + secret for a session.
+ * Anyone may read one by id (it holds no secret, only its state), so the TV can watch it.
+ */
+export const tvLogins = collection('tvLogins', {
+  fields: {
+    /** sha256 of the secret in the QR code (base64url). */
+    secretHash: f.string(),
+    /** Short code shown on both screens, so you can tell you approve the right TV. */
+    code: f.string(),
+    state: f.enum(['waiting', 'approved', 'used']),
+    /** Browser of the TV, as it said (user agent, shortened). */
+    device: f.optional(f.string({ max: 200 })),
+    uid: f.optional(f.string()),
+    email: f.optional(f.string()),
+    createdAt: f.timestamp(),
+    expiresAt: f.timestamp(),
+  },
+  indexes: [],
+});
+
+export const schema = defineSchema({ users, drive, shares, uploads, transfers, tvLogins });

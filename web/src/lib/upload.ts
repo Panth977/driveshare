@@ -22,14 +22,27 @@ const done = (x: XMLHttpRequest) => x.status === 200 || x.status === 201;
 const idOf = (x: XMLHttpRequest): Sent => { try { return { id: JSON.parse(x.responseText).id }; } catch { return {}; } };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export async function sendFile(url: string, file: Blob, onProgress: (sent: number) => void, signal?: AbortSignal): Promise<Sent> {
+/**
+ * `resume`: the session may already hold some bytes (an upload that stopped half way); ask Drive
+ * how far it got and carry on from there.
+ */
+export async function sendFile(url: string, file: Blob, onProgress: (sent: number) => void, signal?: AbortSignal, resume = false, onResume?: (from: number) => void): Promise<Sent> {
   const size = file.size;
+  let offset = 0;
+  if (resume && size > 0) {
+    const q = await put(url, null, `bytes */${size}`, () => {}, signal);
+    if (done(q)) { onProgress(size); return idOf(q); }
+    if (q.status === 404 || q.status === 410) throw new Error('The upload expired. Start it again.');
+    if (q.status !== 308) throw new Error(`Drive answered ${q.status}`);
+    offset = nextOffset(q.getResponseHeader('Range'), 0);
+    onResume?.(offset);
+    onProgress(offset);
+  }
   if (size === 0) {
     const x = await put(url, null, 'bytes */0', () => {}, signal);
     if (!done(x)) throw new Error(`Drive answered ${x.status}`);
     return idOf(x);
   }
-  let offset = 0;
   let tries = 0;
   while (offset < size) {
     const end = Math.min(offset + CHUNK, size);
