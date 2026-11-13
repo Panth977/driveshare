@@ -8,6 +8,10 @@
   import NewShare from '../components/NewShare.svelte';
   import ShareCard from '../components/ShareCard.svelte';
   import FileIcon from '../components/drive/FileIcon.svelte';
+  import Usage from '../components/Usage.svelte';
+  import { linked } from '../lib/linked.svelte.ts';
+
+  const isOwner = $derived(demoMode || account.user?.role === 'admin');
 
   let list = $state<ShareView[] | null>(null);
   let loadError = $state('');
@@ -42,6 +46,7 @@
 </script>
 
 <main class="wrap stack" style="gap:1.4rem">
+{#if isOwner}
   <section class="hero">
     <div>
       <h1>Shares</h1>
@@ -62,6 +67,38 @@
   {:else}
     {#each list as s (s.id)}<ShareCard share={s} />{/each}
   {/if}
+
+{:else}
+  <section class="hero">
+    <div>
+      <h1>Shared with you</h1>
+      <p class="muted" style="margin:0.3rem 0 0">Folders whose owner linked your account. Files you put in them move to the owner's Drive within about 5 minutes and stop using your storage.</p>
+    </div>
+  </section>
+  {#if linked.error && !linked.list}<p class="error">{linked.error}</p>{/if}
+  {#if linked.list === null}
+    <div class="skeleton" style="height:9rem"></div>
+  {:else if linked.list.length === 0}
+    <div class="card empty"><h3>No linked folders</h3><p class="muted small">{account.user?.email} is not linked to a share right now.</p></div>
+  {:else}
+    {#each linked.list as s (s.folderId)}
+      <article class="card stack">
+        <div class="row spread">
+          <div class="stack" style="gap:0.25rem">
+            <h2>{s.name}</h2>
+            <span class="small muted">from {s.ownerEmail}</span>
+          </div>
+          <div class="row">
+            <button class="primary" onclick={() => nav(`/drive/${s.folderId}`)}>Open in My Drive</button>
+            <button onclick={() => nav(`/view/${s.folderId}`)}>Preview</button>
+            <a class="btn ghost" href={s.folderUrl} target="_blank" rel="noopener">Google Drive ↗</a>
+          </div>
+        </div>
+        <Usage cap={s.capBytes} used={s.usedBytes} />
+      </article>
+    {/each}
+  {/if}
+{/if}
 
   <section class="stack" style="gap:0.8rem; margin-top:0.8rem">
     <div class="row spread">

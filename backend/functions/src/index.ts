@@ -175,7 +175,11 @@ export const googleSignIn = onCall(api.googleSignIn, opts, async (req) => {
 // ─── My Drive: the browser talks to Drive itself ──────────────────────────────
 
 export const driveAccess = onCall(api.driveAccess, opts, async (req) => {
-  const uid = admin(req);
+  // The owner, and linked accounts (verified when they signed in): each gets a token for their own Drive only.
+  if (!req.auth) throw new HttpsError('unauthenticated', 'Sign in first');
+  const email = req.auth.token.email as string | undefined;
+  if (!isAdmin(email) && req.auth.token.role !== 'linked') throw new HttpsError('permission-denied', 'This DriveShare is private.');
+  const uid = req.auth.uid;
   const a = await accessFor(uid);
   if (!a.scope.split(' ').includes(DRIVE_FULL_SCOPE)) throw new HttpsError('failed-precondition', 'needs-full-drive');
   return { accessToken: a.token, expiresAt: Date.now() + (a.expiresIn - 120) * 1000, email: String(req.auth!.token.email ?? '') };
@@ -211,7 +215,9 @@ async function tvRequest(id: string, secret: string) {
 }
 
 export const tvApprove = onCall(api.tvApprove, opts, async (req) => {
-  const uid = admin(req);
+  // The owner or a linked account approves a TV for itself (the TV gets that account's own session).
+  if (!req.auth || (!isAdmin(req.auth.token.email as string | undefined) && req.auth.token.role !== 'linked')) throw new HttpsError('permission-denied', 'This DriveShare is private.');
+  const uid = req.auth.uid;
   const t = await tvRequest(req.data.id, req.data.secret);
   if (!t || t.state !== 'waiting' || t.expiresAt.toMillis() < Date.now()) throw new HttpsError('not-found', 'The QR code expired or was used; show a new one on the TV');
   await updateDoc(tvRef(req.data.id), { state: 'approved', uid, email: String(req.auth!.token.email ?? '') } as never);
@@ -239,7 +245,7 @@ export const linkedShares = onCall(api.linkedShares, opts, async (req) => {
   if (!email) throw new HttpsError('unauthenticated', 'Sign in first');
   const snap = await getDocs(query(collection(db, shares), where('linkedEmails', 'array-contains', email)));
   return {
-    shares: snap.docs.map((d) => d.data() as Share).filter((s) => s.enabled).map((s) => ({ name: s.name, folderUrl: folderUrl(s.folderId), ownerEmail: s.ownerEmail, capBytes: s.capBytes, usedBytes: s.usedBytes })),
+    shares: snap.docs.map((d) => d.data() as Share).filter((s) => s.enabled).map((s) => ({ name: s.name, folderId: s.folderId, folderUrl: folderUrl(s.folderId), ownerEmail: s.ownerEmail, capBytes: s.capBytes, usedBytes: s.usedBytes })),
   };
 });
 

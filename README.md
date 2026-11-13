@@ -18,9 +18,10 @@ Two ways in:
 The cap counts everything in the folder. Uploads that would go over it are refused; files from linked
 accounts that would go over it stay with their sender.
 
-## The owner's app
+## The app
 
-Three tabs, made for a laptop and for a TV browser (TV mode: bigger interface, D-pad navigation; on by
+The owner and every linked account get it, each on their own Drive (linked accounts also see the
+folders they are linked to; only the owner makes upload shares). Three tabs, made for a laptop and for a TV browser (TV mode: bigger interface, D-pad navigation; on by
 default in TV browsers, a toggle in the top bar elsewhere).
 
 - **Shares**: the capped upload links above, plus everything in your Drive shared "anyone with the link".

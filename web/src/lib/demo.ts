@@ -88,6 +88,7 @@ export class DemoDrive implements DriveApi {
     let list = [...this.files.values()].filter((f) => f.id !== 'root' && !f.trashed);
     if (q.includes('anyoneWithLink')) list = list.filter((f) => this.perms.has(f.id));
     if (q.includes("mimeType contains 'image/'")) list = list.filter((f) => /^(image|video)\//.test(f.mimeType));
+    if (q.includes('sharedWithMe')) list = list.filter((f) => f.shared);
     if (q.includes('starred')) list = list.filter((f) => f.starred);
     if (q.includes("mimeType != 'application/vnd.google-apps.folder'")) list = list.filter((f) => f.mimeType !== FOLDER_MIME);
     const m = /name contains '([^']*)'/.exec(q);

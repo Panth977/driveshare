@@ -15,14 +15,14 @@
       <div class="stack" style="text-align:center">
         <img src="/icon.svg" alt="" class="logo" />
         <h1>One more step</h1>
-        <p class="muted">{account.needsFull || 'Your account'} is linked to a DriveShare folder. To move the files you put there into the owner's Drive, DriveShare needs access to your Google Drive.</p>
+        <p class="muted">{account.needsFull || 'Your account'} is linked to a DriveShare folder. To move the files you put there into the owner's Drive, DriveShare needs access to your Google Drive. You also get the Finder and viewer for your own Drive.</p>
         <ol class="small muted" style="text-align:left; line-height:1.7">
           <li>If Google says it hasn't verified this app: <b>Advanced</b> › <b>Go to driveshare-p977.web.app</b>.</li>
           <li>Tick <b>See, edit, create and delete all of your Google Drive files</b>.</li>
           <li><b>Continue</b>.</li>
         </ol>
         <p class="small muted">It only touches files you put inside folders you were invited to.</p>
-        <div><button class="primary big" disabled={account.busy} onclick={() => account.grantFull().then((ok) => { if (ok && location.pathname !== '/link') { history.replaceState(null, '', '/link'); dispatchEvent(new PopStateEvent('popstate')); } })}>{account.busy ? 'Waiting for Google…' : 'Allow Drive access'}</button></div>
+        <div><button class="primary big" disabled={account.busy} onclick={() => account.grantFull()}>{account.busy ? 'Waiting for Google…' : 'Allow Drive access'}</button></div>
       </div>
     {:else}
       <div class="head">

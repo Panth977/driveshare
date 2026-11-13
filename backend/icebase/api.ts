@@ -58,7 +58,7 @@ export const api = defineApi({
     tag: 'Linked accounts',
     summary: 'The shares your account is linked to (drop files into their Drive folders)',
     input: f.map({}),
-    output: f.map({ shares: f.array(f.map({ name: f.string(), folderUrl: f.string(), ownerEmail: f.string(), capBytes: f.number(), usedBytes: f.number() })) }),
+    output: f.map({ shares: f.array(f.map({ name: f.string(), folderId: f.string(), folderUrl: f.string(), ownerEmail: f.string(), capBytes: f.number(), usedBytes: f.number() })) }),
   }),
   createShare: endpoint({
     tag: 'Shares',

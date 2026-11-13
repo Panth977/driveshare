@@ -11,6 +11,7 @@
   import { editable, isBack, tv } from '../lib/tv.svelte.ts';
   import { ago, bytesOf, driveLink, duration, failText, isFolder, isMedia, kindOf, thumb, type DFile } from '../lib/gdrive.ts';
   import { children as cacheChildren, remember } from '../lib/listcache.ts';
+  import { linked } from '../lib/linked.svelte.ts';
   import FileIcon from '../components/drive/FileIcon.svelte';
   import Menu, { type MenuItem } from '../components/drive/Menu.svelte';
   import Prompt from '../components/drive/Prompt.svelte';
@@ -22,7 +23,7 @@
 
   type View = 'list' | 'grid' | 'columns';
   type SortKey = 'name' | 'size' | 'modified' | 'kind';
-  const VIRTUAL: Record<string, string> = { recent: 'Recent', starred: 'Starred', search: 'Search' };
+  const VIRTUAL: Record<string, string> = { recent: 'Recent', starred: 'Starred', shared: 'Shared with me', search: 'Search' };
 
   let view = $state<View>((localStorage.getItem('ds.view') as View) || 'list');
   let sortKey = $state<SortKey>((localStorage.getItem('ds.sort') as SortKey) || 'name');
@@ -71,6 +72,7 @@
     loadError = '';
     try {
       if (virtual === 'recent') items = await drive.query(`mimeType != 'application/vnd.google-apps.folder' and trashed = false`, { orderBy: 'modifiedTime desc', max: 200 });
+      else if (virtual === 'shared') items = await drive.query('sharedWithMe = true and trashed = false', { orderBy: 'folder,modifiedTime desc', max: 500 });
       else if (virtual === 'starred') items = await drive.query('starred = true and trashed = false', { orderBy: 'folder,name_natural' });
       else if (virtual === 'search') items = q.trim() ? await drive.query(`name contains '${q.trim().replace(/\\/g, '\\\\').replace(/'/g, "\\'")}' and trashed = false`, { orderBy: 'folder,modifiedTime desc', max: 300 }) : [];
       else if (current) items = await load(current, force);
@@ -349,8 +351,21 @@
       <nav class="places">
         <button class:on={!virtual && current === mydrive.rootId} onclick={() => nav('/drive')}><FileIcon file={{ mimeType: 'application/vnd.google-apps.folder', name: '' }} size={1.05} />My Drive</button>
         <button class:on={virtual === 'recent'} onclick={() => nav('/drive/recent')}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Recent</button>
+        <button class:on={virtual === 'shared'} onclick={() => nav('/drive/shared')}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="3.2"/><path d="M3 19c.6-3.2 3-5 6-5s5.4 1.8 6 5"/><circle cx="17" cy="9" r="2.4"/><path d="M16 14c2.6 0 4.4 1.6 5 4.4"/></svg>Shared with me</button>
         <button class:on={virtual === 'starred'} onclick={() => nav('/drive/starred')}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1 6.2L12 17.3 6.5 20.2l1-6.2L3 9.6l6.2-.9z"/></svg>Starred</button>
       </nav>
+
+      {#if linked.list?.length}
+        <div class="sect">
+          <div class="label">Linked to you</div>
+          {#each linked.list as l (l.folderId)}
+            <button class="big" class:on={current === l.folderId} onclick={() => nav(`/drive/${l.folderId}`)} title={`From ${l.ownerEmail}`}>
+              <span class="ellipsis grow">{l.name}</span><span class="tiny muted num">{formatBytes(Math.max(0, l.capBytes - l.usedBytes))} left</span>
+              <span class="mini"><span style:width="{Math.min(100, (l.usedBytes / Math.max(1, l.capBytes)) * 100)}%"></span></span>
+            </button>
+          {/each}
+        </div>
+      {/if}
 
       {#if rootKids.length}
         <div class="sect">
@@ -556,6 +571,7 @@
   .places { display: grid; gap: 0.1rem; }
   .places button, .sect .big { border: 0; background: none; justify-content: flex-start; gap: 0.65rem; color: var(--ink-2); font-weight: 520; padding: 0.5rem 0.6rem; width: 100%; }
   .places button:hover, .sect .big:hover { background: var(--panel-2); }
+  .sect .big.on { background: var(--accent-soft); color: var(--accent-2); }
   .places button.on { background: var(--accent-soft); color: var(--accent-2); }
   .sect { display: grid; gap: 0.1rem; }
   .label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--faint); font-weight: 650; padding: 0 0.6rem 0.3rem; }

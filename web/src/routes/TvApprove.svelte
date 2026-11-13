@@ -39,8 +39,8 @@
   <SignIn level="file" title="Sign in the TV">
     <p class="muted">First sign in here, on your phone. Then you approve the TV.</p>
   </SignIn>
-{:else if account.user.role !== 'admin'}
-  <div class="center"><div class="card narrow"><p class="error">{account.user.email} is not the owner of this DriveShare.</p></div></div>
+{:else if account.user.role !== 'admin' && account.user.role !== 'linked'}
+  <div class="center"><div class="card narrow"><p class="error">{account.user.email} cannot use this DriveShare.</p></div></div>
 {:else}
   <div class="center">
     <div class="card narrow stack approve">
