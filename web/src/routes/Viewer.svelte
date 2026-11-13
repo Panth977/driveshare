@@ -94,21 +94,38 @@
     drive.comments(c.id).then((l) => { if (cur?.id === c.id) comments = l; }, (e) => toast.show(failText(e)));
   });
 
-  // Images: a big thumbnail first (fast); originals load for files without one, and PDFs.
+  // Images: a big thumbnail first (fast), then the original file itself (the whole picture at full
+  // quality) when the browser can show it and it is not huge. PDFs load as the original too.
+  const SHOWABLE = /^image\/(jpeg|png|gif|webp|avif|bmp|svg\+xml)$/;
+  const ORIGINAL_MAX = 40 * 1024 * 1024;
   $effect(() => {
     const c = cur;
     if (!c || !drive) return;
-    const need = (isImage(c) && !c.thumbnailLink) || isPdf(c);
-    if (need && !full[c.id]) drive.mediaUrl(c).then((u) => (full = { ...full, [c.id]: u }), () => {});
+    const original = isPdf(c) || (isImage(c) && (!c.thumbnailLink || (SHOWABLE.test(c.mimeType) && bytesOf(c) <= ORIGINAL_MAX)));
+    if (original && !full[c.id]) {
+      drive.mediaUrl(c).then((u) => {
+        // Keep the last few originals in memory; free the rest.
+        const keys = Object.keys(full);
+        const next = { ...full, [c.id]: u };
+        for (const k of keys.slice(0, Math.max(0, keys.length - 12))) { if (next[k]!.startsWith('blob:')) URL.revokeObjectURL(next[k]!); delete next[k]; }
+        full = next;
+      }, () => {});
+    }
     // Warm the next two pictures.
     for (const n of [index + 1, index + 2]) {
       const f = list?.[n];
-      const src = f && thumb(f, px());
+      const src = f && thumb(f, px(f));
       if (src) new Image().src = src;
     }
   });
 
-  const px = () => Math.min(2560, Math.round(Math.max(innerWidth, innerHeight) * Math.min(2, devicePixelRatio || 1)));
+  /** Thumbnail size: the screen's long edge, never bigger than the picture itself (no blurry upscaling). */
+  const px = (f?: DFile) => {
+    const screen = Math.min(2560, Math.round(Math.max(innerWidth, innerHeight) * Math.min(2, devicePixelRatio || 1)));
+    const m = f?.imageMediaMetadata ?? f?.videoMediaMetadata;
+    const own = m?.width && m?.height ? Math.max(m.width, m.height) : 0;
+    return own ? Math.min(screen, own) : screen;
+  };
 
   function go(i: number) {
     if (!list?.length) return;
@@ -302,9 +319,9 @@
         {#key cur.id}
           {#if isVideo(cur)}
             <!-- svelte-ignore a11y_media_has_caption -->
-            <video bind:this={videoEl} src={mydrive.drive.streamUrl(cur)} poster={thumb(cur, px())} controls autoplay playsinline onclick={(e) => e.stopPropagation()}></video>
+            <video bind:this={videoEl} src={mydrive.drive.streamUrl(cur)} poster={thumb(cur, px(cur))} controls autoplay playsinline onclick={(e) => e.stopPropagation()}></video>
           {:else if isImage(cur)}
-            <img class="pic" src={full[cur.id] ?? thumb(cur, px())} alt={cur.name} referrerpolicy="no-referrer" />
+            <img class="pic" src={full[cur.id] ?? thumb(cur, px(cur))} alt={cur.name} referrerpolicy="no-referrer" />
           {:else if isAudio(cur)}
             <div class="msg"><FileIcon file={cur} size={6} /><audio src={mydrive.drive.streamUrl(cur)} controls autoplay onclick={(e) => e.stopPropagation()}></audio></div>
           {:else if isPdf(cur) && full[cur.id]}
@@ -409,8 +426,10 @@
   .acts { display: flex; align-items: center; gap: 0.25rem; flex-wrap: wrap; justify-content: flex-end; }
   .tog { display: inline-flex; flex-direction: row; align-items: center; gap: 0.35rem; color: var(--muted); font-weight: 500; padding: 0 0.4rem; white-space: nowrap; }
   .stage { position: relative; display: grid; place-items: center; overflow: hidden; min-height: 0; }
-  .pic, video { max-width: 100%; max-height: 100%; width: 100%; height: 100%; object-fit: contain; display: block; animation: fade 0.18s ease-out; }
-  .small-pic { width: auto; height: auto; max-height: 50vh; border-radius: 12px; }
+  /* Absolutely placed: a percentage height does not resolve inside the grid stage, which made
+     pictures fill the width and get cropped. Now the whole picture always fits. */
+  .pic, video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; animation: fade 0.18s ease-out; }
+  .small-pic { position: static; width: auto; height: auto; max-width: 100%; max-height: 50vh; border-radius: 12px; }
   @keyframes fade { from { opacity: 0.2; } }
   .doc { width: min(1100px, 100%); height: 100%; border: 0; background: #fff; }
   .msg { display: grid; justify-items: center; gap: 1rem; text-align: center; padding: 2rem; }

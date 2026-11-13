@@ -617,8 +617,8 @@
   .chev { color: var(--faint); }
   .ci.sel .chev { color: var(--accent-ink); }
   .detail { flex: 1 0 18rem; padding: 1.2rem; display: grid; align-content: start; gap: 0.9rem; }
-  .dart { aspect-ratio: 4 / 3; border-radius: 12px; background: var(--panel); display: grid; place-items: center; overflow: hidden; border: 1px solid var(--line); }
-  .dart img { width: 100%; height: 100%; object-fit: contain; background: #000; }
+  .dart { position: relative; aspect-ratio: 4 / 3; border-radius: 12px; background: var(--panel); display: grid; place-items: center; overflow: hidden; border: 1px solid var(--line); }
+  .dart img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
   .dn { word-break: break-word; }
   dl { display: grid; grid-template-columns: auto 1fr; gap: 0.35rem 0.9rem; margin: 0; font-size: 0.82rem; }
   dt { color: var(--faint); }
