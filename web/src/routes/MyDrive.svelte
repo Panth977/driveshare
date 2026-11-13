@@ -41,6 +41,8 @@
   let path = $state<DFile[]>([]);
   let filesInput = $state<HTMLInputElement | null>(null);
   let folderInput = $state<HTMLInputElement | null>(null);
+  let syncInput = $state<HTMLInputElement | null>(null);
+  let syncTarget = { id: '', name: '' };
   let listEl = $state<HTMLElement | null>(null);
 
   const known = new Map<string, DFile>();
@@ -205,7 +207,7 @@
       { label: 'Share link…', key: 'S', run: () => (sharing = f), sep: true },
       { label: f.starred ? 'Remove star' : 'Star', key: '*', run: () => void star(f) },
       { label: 'Rename…', key: 'F2', run: () => rename(f) },
-      ...(folder ? [{ label: 'Upload into this folder…', run: () => { uploadTarget = f.id; folderInput?.click(); } }] : []),
+      ...(folder ? [{ label: 'Upload into this folder…', run: () => { uploadTarget = f.id; folderInput?.click(); } }, { label: 'Sync a local folder into this…', run: () => { syncTarget = { id: f.id, name: f.name }; syncInput?.click(); } }] : []),
       { label: 'Open in Google Drive', run: () => window.open(driveLink(f), '_blank', 'noopener'), sep: true },
       { label: 'Move to bin', key: 'Del', danger: true, run: () => askTrash(f), sep: true },
     ];
@@ -222,6 +224,7 @@
       { label: 'New folder…', run: newFolder },
       { label: 'Upload files…', run: () => { uploadTarget = current; filesInput?.click(); } },
       { label: 'Upload a folder…', run: () => { uploadTarget = current; folderInput?.click(); } },
+      { label: 'Sync a local folder into here…', run: () => { syncTarget = { id: current, name: title }; syncInput?.click(); } },
       { label: 'Preview everything here', run: () => preview(current), sep: true },
       { label: 'Refresh', run: () => void refresh(true) },
     ] };
@@ -236,6 +239,14 @@
     if (drive.demo) { toast.show('Uploads are off in the demo.'); return; }
     void uploader.add(drive, target, list);
   }
+  function startSync(list: ReturnType<typeof fromInput>) {
+    const t = syncTarget.id ? syncTarget : { id: current, name: title };
+    syncTarget = { id: '', name: '' };
+    if (!list.length || !drive || !t.id) return;
+    if (drive.demo) { toast.show('Uploads are off in the demo.'); return; }
+    void uploader.syncFolder(drive, t.id, t.name, list);
+  }
+
   async function drop(e: DragEvent) {
     e.preventDefault();
     over = false;
@@ -417,6 +428,8 @@
         {#if current}
           <button class="ghost" onclick={() => preview(current)} title="Preview everything here, one by one"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>Preview</button>
           <button class="ghost" onclick={newFolder}>New folder</button>
+          <button onclick={() => { syncTarget = { id: current, name: title }; syncInput?.click(); }} title="Pick a folder on this computer: whatever is missing here gets uploaded">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8M4 4v4h4M4 13a8 8 0 0 0 14.3 4.9L20 16M20 20v-4h-4"/></svg>Sync folder</button>
           <button class="primary" onclick={() => folderInput?.click()}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 19V5M5 12l7-7 7 7"/></svg>Upload folder</button>
           <button class="ghost" onclick={() => filesInput?.click()}>Files</button>
@@ -553,6 +566,7 @@
   </div>
 
   <input type="file" multiple hidden bind:this={filesInput} onchange={(e) => { startUpload(fromInput(e.currentTarget.files)); e.currentTarget.value = ''; }} />
+  <input type="file" multiple hidden bind:this={syncInput} webkitdirectory onchange={(e) => { startSync(fromInput(e.currentTarget.files)); e.currentTarget.value = ''; }} />
   <input type="file" multiple hidden bind:this={folderInput} webkitdirectory onchange={(e) => { startUpload(fromInput(e.currentTarget.files)); e.currentTarget.value = ''; }} />
 {/if}
 

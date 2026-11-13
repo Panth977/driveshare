@@ -101,7 +101,7 @@ export class DemoDrive implements DriveApi {
     for (let i = 0; i < all.length; i += 60) { await wait(60); onPage(all.slice(i, i + 60)); }
   }
   async startPageToken() { return '1'; }
-  async changes() { return { changes: [], next: '1' }; }
+  async changes() { return { changes: [], next: '1', done: true }; }
   async createFolder(name: string, parent: string) { const f: DFile = { id: id(), name, mimeType: FOLDER_MIME, parents: [parent], modifiedTime: new Date().toISOString(), ownedByMe: true }; this.files.set(f.id, f); return f; }
   async update(fid: string, patch: { name?: string; trashed?: boolean; starred?: boolean }) { const f = this.files.get(fid)!; Object.assign(f, patch); return { ...f }; }
   async comments(fid: string) { await wait(); return this.comm.get(fid) ?? []; }

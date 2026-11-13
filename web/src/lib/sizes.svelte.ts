@@ -78,6 +78,7 @@ class SizeIndex {
       this.error = (e as Error).message;
     }
     this.timer ??= setInterval(() => { if (this.state === 'ready') void this.update(); }, 60_000);
+    addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && this.state === 'ready') void this.update(); });
   }
 
   /** List the whole Drive again. */
@@ -101,25 +102,40 @@ class SizeIndex {
     await this.save();
   }
 
-  /** Read Drive's change feed since last time and fold it in. */
+  /**
+   * Read Drive's change feed since last time and fold it in, page by page: totals are redone and
+   * the copy saved every few pages, so a long backlog (the sweep moves many files) is never lost
+   * half way. If the copy is very far behind, listing everything again is quicker.
+   */
   async update(): Promise<void> {
     const d = this.drive;
-    if (!d || !this.changeToken || d.demo) return;
+    if (!d || !this.changeToken || d.demo || this.state === 'updating' || this.state === 'scanning') return;
     this.state = 'updating';
     try {
-      const r = await d.changes(this.changeToken, INDEX_FIELDS);
-      for (const c of r.changes) {
-        if (c.removed || !c.file || c.file.trashed) this.entries.delete(c.fileId);
-        else this.entries.set(c.fileId, entryOf(c.file));
+      const latest = Number(await d.startPageToken());
+      const behind = latest - Number(this.changeToken);
+      if (Number.isFinite(behind) && behind > 150_000) return await this.rebuild();
+      let pages = 0, dirty = false;
+      for (;;) {
+        const r = await d.changes(this.changeToken, INDEX_FIELDS);
+        for (const c of r.changes) {
+          if (c.removed || !c.file || c.file.trashed) this.entries.delete(c.fileId);
+          else this.entries.set(c.fileId, entryOf(c.file));
+        }
+        this.changeToken = r.next;
+        dirty ||= r.changes.length > 0;
+        if (r.done) break;
+        if (++pages % 15 === 0) { this.sum(); await this.save(); dirty = false; }
       }
-      this.changeToken = r.next;
-      if (r.changes.length) { this.sum(); await this.save(); }
+      if (dirty) this.sum();
+      await this.save();
     } catch (e) {
       // An expired change token means the copy is too old: list everything again.
-      if ((e as { status?: number }).status === 410 || (e as { status?: number }).status === 404) return this.rebuild();
+      if ((e as { status?: number }).status === 410 || (e as { status?: number }).status === 404) { this.state = 'ready'; return this.rebuild(); }
       this.error = (e as Error).message;
+    } finally {
+      if (this.state === 'updating') this.state = 'ready';
     }
-    this.state = 'ready';
   }
 
   /** Apply a change we made ourselves right away (trash, upload, new folder), before the feed shows it. */

@@ -16,7 +16,7 @@
   const label = (j: Job) => ({ waiting: 'Waiting', checking: 'Checking', sending: j.resumed ? 'Resuming' : 'Sending', done: j.resumedFrom ? `Done · carried on from ${formatBytes(j.resumedFrom)}` : 'Done', skipped: 'Already in Drive', failed: j.error ?? 'Failed', cancelled: 'Cancelled' })[j.state];
 </script>
 
-{#if uploader.open && uploader.jobs.length}
+{#if uploader.open && (uploader.jobs.length || uploader.sync)}
   <section class="panel" class:collapsed aria-label="Uploads">
     <header>
       <div class="ring" style="--p:{pct}">
@@ -24,7 +24,7 @@
       </div>
       <div class="grow">
         <div class="ttl">
-          {#if t.active}{uploader.paused ? 'Paused' : `Uploading ${t.active} file${t.active === 1 ? '' : 's'}`}{:else if t.failed}{t.failed} failed{:else}Upload finished{/if}
+          {#if uploader.sync?.phase === 'comparing'}Comparing with Drive…{:else if uploader.sync?.phase === 'done' && !t.count}Already in sync{:else if t.active}{uploader.paused ? 'Paused' : `Uploading ${t.active} file${t.active === 1 ? '' : 's'}`}{:else if t.failed}{t.failed} failed{:else}Upload finished{/if}
         </div>
         <div class="tiny muted num">
           {formatBytes(t.sent)} of {formatBytes(t.size)}
@@ -35,7 +35,26 @@
       <button class="ghost icon" aria-label={collapsed ? 'Expand' : 'Collapse'} onclick={() => (collapsed = !collapsed)}>{collapsed ? '▴' : '▾'}</button>
       {#if !t.active}<button class="ghost icon" aria-label="Close" onclick={() => uploader.clear()}>✕</button>{/if}
     </header>
-    {#if !collapsed}
+    {#if uploader.sync}
+      {@const sy = uploader.sync}
+      <div class="sync">
+        <div class="row spread small"><b class="ellipsis">Sync “{sy.local}” → {sy.target}</b>
+          <span class="pill" class:on={sy.phase === 'done'} class:warn={sy.phase === 'failed'}>{({ comparing: 'Comparing', uploading: 'Uploading', done: 'In sync', failed: 'Failed' })[sy.phase]}</span></div>
+        {#if sy.phase === 'comparing'}
+          <div class="bar thin"><div class="used" style:width="{sy.files ? (sy.compared / sy.files) * 100 : 0}%"></div></div>
+          <div class="tiny muted num">Comparing {sy.compared.toLocaleString()} of {sy.files.toLocaleString()} files with Drive…</div>
+        {:else}
+          <div class="counts num">
+            <span><b>{sy.same.toLocaleString()}</b> already in Drive</span>
+            <span class:hot={sy.missing}><b>{sy.missing.toLocaleString()}</b> new</span>
+            <span class:hot={sy.changed}><b>{sy.changed.toLocaleString()}</b> changed</span>
+          </div>
+          <div class="tiny faint num">{sy.files.toLocaleString()} local files · {formatBytes(sy.bytes)} · {formatBytes(sy.toSend)} to send{sy.changed ? ' · changed files get a new version (Drive keeps the old one 30 days)' : ''}{sy.phase === 'done' && !sy.missing && !sy.changed ? ' · nothing to do' : ''}</div>
+        {/if}
+        {#if sy.error}<div class="tiny error">{sy.error}</div>{/if}
+      </div>
+    {/if}
+    {#if !collapsed && uploader.jobs.length}
       <div class="tools">
         <div class="seg">
           {#each [['all', 'All'], ['active', 'In progress'], ['failed', 'Failed']] as [k, l]}
@@ -89,6 +108,10 @@
   .st.good { color: var(--good); }
   .fail .st { color: var(--bad); }
   .bar.thin { height: 4px; margin-top: 0.3rem; }
+  .sync { display: grid; gap: 0.4rem; padding: 0.7rem 1rem; border-top: 1px solid var(--line); background: rgb(124 156 255 / 0.05); }
+  .counts { display: flex; gap: 0.9rem; font-size: 0.78rem; color: var(--muted); }
+  .counts b { color: var(--ink); }
+  .counts .hot b { color: var(--accent-2); }
   .hint { margin: 0; padding: 0.6rem 1rem 0.8rem; border-top: 1px solid var(--line); }
   .collapsed header { padding-bottom: 0.9rem; }
 </style>

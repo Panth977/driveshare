@@ -38,6 +38,12 @@ tap Approve. The TV gets its own session.
 Drive (same name, same size, same place) are skipped, and a half-sent file goes on from the last byte
 Drive has (its resumable session is kept in the browser for six days).
 
+**Sync folder.** Pick a folder on your computer and it is compared with the Drive folder you are in
+(its contents, folder by folder): new files are uploaded, files whose size changed get the new contents
+as a new version of the same Drive file, files already there are left alone, and nothing in Drive is
+deleted. The panel shows the comparison (already in Drive · new · changed) and the upload progress.
+Syncing again after a stop carries on where it left off.
+
 **How sizes work.** Drive never says how big a folder is. The browser lists the whole Drive once
 (many queries in parallel; ~170,000 items take about five minutes), keeps a compact copy in IndexedDB,
 and from then on reads only Drive's change feed. All of My Drive talks to Google from the browser with a

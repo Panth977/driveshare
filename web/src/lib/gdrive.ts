@@ -59,7 +59,8 @@ export interface DriveApi {
   /** Every non-trashed file and folder you can see, page by page (for the size index). */
   everything(onPage: (files: DFile[]) => void, fields: string): Promise<void>;
   startPageToken(): Promise<string>;
-  changes(pageToken: string, fields: string): Promise<{ changes: { fileId: string; removed?: boolean; file?: DFile }[]; next: string }>;
+  /** One page of Drive's change feed; `done` when `next` is the token to start from next time. */
+  changes(pageToken: string, fields: string): Promise<{ changes: { fileId: string; removed?: boolean; file?: DFile }[]; next: string; done: boolean }>;
   createFolder(name: string, parent: string): Promise<DFile>;
   update(id: string, patch: { name?: string; trashed?: boolean; starred?: boolean }): Promise<DFile>;
   comments(id: string): Promise<DComment[]>;
@@ -68,7 +69,8 @@ export interface DriveApi {
   shareAnyone(id: string): Promise<string>;
   unshareAnyone(id: string): Promise<void>;
   /** Open a resumable upload; the browser then PUTs chunks to the URL it returns. */
-  startUpload(meta: { name: string; parents: string[]; mimeType?: string; modifiedTime?: string }, size: number): Promise<string>;
+  /** `replace`: put new contents into this existing file (a new revision) instead of making a file. */
+  startUpload(meta: { name: string; parents: string[]; mimeType?: string; modifiedTime?: string }, size: number, replace?: string): Promise<string>;
   /** A blob: or http URL that shows the file's bytes (images, PDFs). */
   mediaUrl(f: DFile): Promise<string>;
   /** A URL a <video>/<audio> element can stream with Range requests. */
@@ -212,20 +214,14 @@ export class RestDrive implements DriveApi {
   }
 
   async changes(pageToken: string, fields: string) {
-    const out: { fileId: string; removed?: boolean; file?: DFile }[] = [];
-    let token = pageToken;
-    for (;;) {
-      const u = new URL(`${API}/changes`);
-      u.searchParams.set('pageToken', token);
-      u.searchParams.set('pageSize', '1000');
-      u.searchParams.set('spaces', 'drive');
-      u.searchParams.set('includeRemoved', 'true');
-      u.searchParams.set('fields', `nextPageToken,newStartPageToken,changes(fileId,removed,file(${fields},trashed))`);
-      const r = await this.call<{ changes: typeof out; nextPageToken?: string; newStartPageToken?: string }>('GET', u.toString());
-      out.push(...r.changes);
-      if (r.newStartPageToken) return { changes: out, next: r.newStartPageToken };
-      token = r.nextPageToken!;
-    }
+    const u = new URL(`${API}/changes`);
+    u.searchParams.set('pageToken', pageToken);
+    u.searchParams.set('pageSize', '1000');
+    u.searchParams.set('spaces', 'drive');
+    u.searchParams.set('includeRemoved', 'true');
+    u.searchParams.set('fields', `nextPageToken,newStartPageToken,changes(fileId,removed,file(${fields},trashed))`);
+    const r = await this.call<{ changes: { fileId: string; removed?: boolean; file?: DFile }[]; nextPageToken?: string; newStartPageToken?: string }>('GET', u.toString());
+    return { changes: r.changes ?? [], next: (r.newStartPageToken ?? r.nextPageToken)!, done: !!r.newStartPageToken };
   }
 
   createFolder(name: string, parent: string) {
@@ -262,17 +258,19 @@ export class RestDrive implements DriveApi {
     }
   }
 
-  async startUpload(meta: { name: string; parents: string[]; mimeType?: string; modifiedTime?: string }, size: number): Promise<string> {
+  async startUpload(meta: { name: string; parents: string[]; mimeType?: string; modifiedTime?: string }, size: number, replace?: string): Promise<string> {
+    // A new revision keeps the file's id, place, links and comments; parents may not be sent then.
+    const body = replace ? { ...(meta.modifiedTime ? { modifiedTime: meta.modifiedTime } : {}) } : meta;
     for (let attempt = 0; ; attempt++) {
-      const res = await fetch(`${UPLOAD}/files?uploadType=resumable&fields=id,name,size,parents`, {
-        method: 'POST',
+      const res = await fetch(replace ? `${UPLOAD}/files/${encodeURIComponent(replace)}?uploadType=resumable&fields=id,name,size,parents` : `${UPLOAD}/files?uploadType=resumable&fields=id,name,size,parents`, {
+        method: replace ? 'PATCH' : 'POST',
         headers: {
           authorization: `Bearer ${await this.token()}`,
           'content-type': 'application/json; charset=UTF-8',
           'x-upload-content-length': String(size),
           ...(meta.mimeType ? { 'x-upload-content-type': meta.mimeType } : {}),
         },
-        body: JSON.stringify(meta),
+        body: JSON.stringify(body),
       });
       const url = res.headers.get('location');
       if (res.ok && url) return url;

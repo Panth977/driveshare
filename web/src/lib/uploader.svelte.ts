@@ -23,6 +23,24 @@ export interface Job {
   file: File;
   parent: string;
   abort?: AbortController;
+  /** Sync found this file in Drive with a different size: upload the new contents into it. */
+  replace?: string;
+}
+
+/** A folder sync: the local folder's contents compared with a Drive folder, then what differs uploaded. */
+export interface SyncRun {
+  local: string;
+  target: string;
+  targetId: string;
+  phase: 'comparing' | 'uploading' | 'done' | 'failed';
+  files: number;
+  bytes: number;
+  compared: number;
+  same: number;
+  missing: number;
+  changed: number;
+  toSend: number;
+  error?: string;
 }
 
 export interface Picked { file: File; path: string }
@@ -98,6 +116,8 @@ class Uploader {
   private lastAt = 0;
   private tick: ReturnType<typeof setInterval> | null = null;
   onFinished: (() => void) | null = null;
+  /** The sync in progress (or the last one), shown at the top of the upload panel. */
+  sync = $state<SyncRun | null>(null);
 
   get totals() {
     let size = 0, sent = 0, done = 0, skipped = 0, failed = 0, active = 0;
@@ -140,6 +160,7 @@ class Uploader {
     this.lastBytes = sent;
     this.lastAt = now;
     if (!this.totals.active && this.tick) { clearInterval(this.tick); this.tick = null; this.speed = 0; this.lastAt = 0; }
+    if (this.sync?.phase === 'uploading' && !this.jobs.some((j) => j.parent === this.sync!.targetId && ['waiting', 'checking', 'sending'].includes(j.state))) this.sync.phase = 'done';
   }
 
   private pump() {
@@ -201,17 +222,18 @@ class Uploader {
       const folder = await this.folderFor(j.parent, j.dir);
       const same = (await this.children(folder)).get(j.name)?.find((f) => f.mimeType !== FOLDER_MIME && bytesOf(f) === j.size);
       if (same) { j.state = 'skipped'; j.sent = j.size; return; }
+      const meta = {
+        name: j.name, parents: [folder],
+        ...(j.file.type ? { mimeType: j.file.type } : {}),
+        ...(j.file.lastModified ? { modifiedTime: new Date(j.file.lastModified).toISOString() } : {}),
+      };
       j.state = 'sending';
       const skey = `${folder}/${j.name}:${j.size}:${j.file.lastModified}`;
       const saved = await sessionGet(skey);
       let url = saved && Date.now() - saved.at < SESSION_MS ? saved.url : '';
       if (url) j.resumed = true;
       else {
-        url = await d.startUpload({
-          name: j.name, parents: [folder],
-          ...(j.file.type ? { mimeType: j.file.type } : {}),
-          ...(j.file.lastModified ? { modifiedTime: new Date(j.file.lastModified).toISOString() } : {}),
-        }, j.size);
+        url = await d.startUpload(meta, j.size, j.replace);
         await sessionSet(skey, { url, at: Date.now() });
       }
       let r;
@@ -222,7 +244,7 @@ class Uploader {
         // The saved session is gone: start this file over once.
         j.resumed = false;
         j.sent = 0;
-        url = await d.startUpload({ name: j.name, parents: [folder], ...(j.file.type ? { mimeType: j.file.type } : {}) }, j.size);
+        url = await d.startUpload(meta, j.size, j.replace);
         await sessionSet(skey, { url, at: Date.now() });
         r = await sendFile(url, j.file, (n) => (j.sent = n), j.abort.signal);
       }
@@ -235,6 +257,74 @@ class Uploader {
       j.state = 'failed';
       j.error = (e as Error).message;
     }
+  }
+
+  /**
+   * Sync a local folder into the Drive folder `targetId`: its contents (not the folder itself) are
+   * compared with what is in Drive, folder by folder. New files are uploaded, files whose size
+   * changed get their new contents as a new revision, files already there are left alone.
+   * Nothing in Drive is deleted. Stopping and syncing again carries on (resumable sessions).
+   */
+  async syncFolder(drive: DriveApi, targetId: string, target: string, picked: Picked[]): Promise<void> {
+    this.drive = drive;
+    this.open = true;
+    this.listing.clear();
+    const list = picked.filter((p) => !JUNK.test(p.path)).map((p) => {
+      const parts = p.path.split('/').filter(Boolean);
+      if (parts.length > 1) parts.shift(); // the picked folder's own name
+      const name = parts.pop() ?? p.file.name;
+      return { file: p.file, dir: parts.join('/'), name };
+    });
+    const local = picked[0]?.path.split('/')[0] ?? 'folder';
+    const run: SyncRun = { local, target, targetId, phase: 'comparing', files: list.length, bytes: list.reduce((n, x) => n + x.file.size, 0), compared: 0, same: 0, missing: 0, changed: 0, toSend: 0 };
+    this.sync = run;
+    const r = this.sync!;
+    try {
+      // Compare, one Drive listing per folder, several folders at once.
+      const dirs = [...new Set(list.map((x) => x.dir))];
+      const found = new Map<string, Map<string, DFile[]> | null>();
+      let next = 0;
+      await Promise.all(Array.from({ length: 6 }, async () => {
+        while (next < dirs.length) {
+          const dir = dirs[next++]!;
+          const id = await this.findFolder(targetId, dir);
+          found.set(dir, id ? await this.children(id) : null);
+        }
+      }));
+      const queue: { file: File; dir: string; name: string; replace?: string }[] = [];
+      for (const x of list) {
+        const kids = found.get(x.dir)?.get(x.name)?.filter((f) => f.mimeType !== FOLDER_MIME) ?? [];
+        r.compared++;
+        if (!kids.length) { r.missing++; queue.push(x); continue; }
+        // Google Docs have no size: never overwrite those.
+        if (kids.some((f) => bytesOf(f) === x.file.size || f.mimeType.startsWith('application/vnd.google-apps'))) { r.same++; continue; }
+        r.changed++;
+        queue.push({ ...x, replace: kids[0]!.id });
+      }
+      r.toSend = queue.reduce((n, x) => n + x.file.size, 0);
+      r.phase = queue.length ? 'uploading' : 'done';
+      for (const x of queue) {
+        const key = `${targetId}/${x.dir}/${x.name}:${x.file.size}:${x.file.lastModified}`;
+        if (this.jobs.some((j) => j.key === key && j.state !== 'failed' && j.state !== 'cancelled')) continue;
+        this.jobs.push({ key, name: x.name, dir: x.dir, size: x.file.size, sent: 0, state: 'waiting', file: x.file, parent: targetId, ...(x.replace ? { replace: x.replace } : {}) });
+      }
+      this.tick ??= setInterval(() => this.measure(), 1000);
+      this.pump();
+    } catch (e) {
+      r.phase = 'failed';
+      r.error = (e as Error).message;
+    }
+  }
+
+  /** The existing Drive folder for `dir` under `parent`, or null (sync compares before it creates anything). */
+  private async findFolder(parent: string, dir: string): Promise<string | null> {
+    let id = parent;
+    for (const name of dir ? dir.split('/') : []) {
+      const f = (await this.children(id)).get(name)?.find((x) => x.mimeType === FOLDER_MIME);
+      if (!f) return null;
+      id = f.id;
+    }
+    return id;
   }
 
   pause() {
@@ -252,7 +342,8 @@ class Uploader {
   cancelAll() { for (const j of this.jobs) this.cancel(j); }
   clear() {
     this.jobs = this.jobs.filter((j) => j.state === 'waiting' || j.state === 'sending' || j.state === 'checking');
-    if (!this.jobs.length) this.open = false;
+    if (this.sync && this.sync.phase !== 'comparing' && this.sync.phase !== 'uploading') this.sync = null;
+    if (!this.jobs.length && !this.sync) this.open = false;
   }
 }
 
