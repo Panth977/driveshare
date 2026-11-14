@@ -8,6 +8,8 @@
   import Shares from './Shares.svelte';
   import MyDrive from './MyDrive.svelte';
   import Viewer from './Viewer.svelte';
+  import TvBrowse from './TvBrowse.svelte';
+  import { tv } from '../lib/tv.svelte.ts';
 
   // Linked accounts get the same app on their own Drive (My Drive, Viewer), plus the folders they are linked to.
   $effect(() => { linked.load(); });
@@ -28,6 +30,8 @@
   <div class="center muted">This account cannot use this DriveShare.</div>
 {:else if view}
   <Viewer folderId={view[1] ?? ''} fileId={view[2] ?? ''} />
+{:else if tv.on}
+  <TvBrowse place={drive?.[1] ?? ''} />
 {:else}
   <TopBar tabs />
   {#if drive}

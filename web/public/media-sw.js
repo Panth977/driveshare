@@ -92,14 +92,21 @@ async function thumb(e, url) {
   const cache = await caches.open(THUMBS);
   const hit = await cache.match(key);
   if (hit) return hit;
-  let res = await fetch(url.searchParams.get('u') || '', { mode: 'cors' }).catch(() => null);
+  let link = url.searchParams.get('u') || '';
+  let res = link ? await fetch(link, { mode: 'cors' }).catch(() => 'blocked') : null;
+  if (res === 'blocked') {
+    // Some browsers (older Android TV web views) get no CORS answer from Google's image server:
+    // let the <img> load it itself (the browser's HTTP cache keeps it for a day).
+    return Response.redirect(link, 302);
+  }
   if (!res || !res.ok) {
     // The signed link expired (they last hours): ask Drive for a new one.
     const meta = await authed(e, `${API}${encodeURIComponent(id)}?fields=thumbnailLink`).then((r) => r.json()).catch(() => null);
-    const link = meta && meta.thumbnailLink ? meta.thumbnailLink.replace(/=s\d+(-[a-z0-9-]+)?$/i, `=s${s}`) : '';
-    res = link ? await fetch(link, { mode: 'cors' }).catch(() => null) : null;
+    link = meta && meta.thumbnailLink ? meta.thumbnailLink.replace(/=s\d+(-[a-z0-9-]+)?$/i, `=s${s}`) : '';
+    if (!link) return new Response('', { status: 404 });
+    res = await fetch(link, { mode: 'cors' }).catch(() => null);
+    if (!res || !res.ok) return Response.redirect(link, 302);
   }
-  if (!res || !res.ok) return new Response('', { status: 404 });
   const body = await res.blob();
   const out = new Response(body, { headers: { 'content-type': res.headers.get('content-type') || 'image/jpeg' } });
   await cache.put(key, out.clone());

@@ -70,6 +70,31 @@ export class Drive {
     return this.call('GET', `${API}/about?fields=user(emailAddress,permissionId)`);
   }
 
+  startPageToken(): Promise<string> {
+    return this.call<{ startPageToken: string }>('GET', `${API}/changes/startPageToken`).then((r) => r.startPageToken);
+  }
+
+  /**
+   * Did this account get new files of its own since `token`? (Drive's change feed: one or two calls,
+   * instead of walking a whole folder tree.) Returns the token to use next time.
+   */
+  async newOwnFiles(token: string): Promise<{ any: boolean; next: string }> {
+    let page = token;
+    let any = false;
+    for (let i = 0; i < 50; i++) {
+      const u = new URL(`${API}/changes`);
+      u.searchParams.set('pageToken', page);
+      u.searchParams.set('pageSize', '1000');
+      u.searchParams.set('spaces', 'drive');
+      u.searchParams.set('fields', 'nextPageToken,newStartPageToken,changes(removed,file(mimeType,ownedByMe,trashed))');
+      const r = await this.call<{ nextPageToken?: string; newStartPageToken?: string; changes: { removed?: boolean; file?: { mimeType: string; ownedByMe?: boolean; trashed?: boolean } }[] }>('GET', u.toString());
+      any ||= r.changes.some((c) => !c.removed && c.file?.ownedByMe && !c.file.trashed && c.file.mimeType !== FOLDER_MIME);
+      if (r.newStartPageToken) return { any, next: r.newStartPageToken };
+      page = r.nextPageToken!;
+    }
+    return { any: true, next: token };
+  }
+
   get(id: string): Promise<DriveFile> {
     return this.call('GET', `${API}/files/${encodeURIComponent(id)}?fields=${FILE_FIELDS}`);
   }

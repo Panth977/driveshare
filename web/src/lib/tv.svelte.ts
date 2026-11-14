@@ -2,16 +2,19 @@
 // anything clickable. On by default in TV browsers; a toggle in the top bar for everything else.
 const TV_UA = /\b(SMART-?TV|SmartTV|Tizen|Web0S|WebOS|NetCast|BRAVIA|AFT[A-Z]|CrKey|GoogleTV|Android TV|AndroidTV|HbbTV|Roku|PhilipsTV|VIDAA|Viera|AQUOS)\b/i;
 
+/** Inside the DriveShare Android TV app (its WebView adds this to the user agent). */
+export const inTvApp = /DriveShareTV\//.test(navigator.userAgent);
+
 class TvMode {
   on = $state(false);
   constructor() {
     const q = new URLSearchParams(location.search).get('tv');
     const saved = localStorage.getItem('ds.tv');
-    this.on = q != null ? q !== '0' : saved != null ? saved === '1' : TV_UA.test(navigator.userAgent);
+    this.on = inTvApp || (q != null ? q !== '0' : saved != null ? saved === '1' : TV_UA.test(navigator.userAgent));
     this.apply();
   }
-  toggle() { this.on = !this.on; localStorage.setItem('ds.tv', this.on ? '1' : '0'); this.apply(); }
-  private apply() { document.documentElement.classList.toggle('tv', this.on); }
+  toggle() { if (inTvApp) return; this.on = !this.on; localStorage.setItem('ds.tv', this.on ? '1' : '0'); this.apply(); }
+  private apply() { document.documentElement.classList.toggle('tv', this.on); document.documentElement.classList.toggle('tvapp', inTvApp); }
 }
 export const tv = new TvMode();
 
@@ -59,7 +62,7 @@ export function moveFocus(dir: 'left' | 'right' | 'up' | 'down'): boolean {
   }
   if (!best) return false;
   best.focus();
-  best.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  best.scrollIntoView({ block: tv.on ? 'center' : 'nearest', inline: 'nearest', behavior: tv.on ? 'smooth' : 'auto' });
   return true;
 }
 
@@ -77,3 +80,13 @@ export function installSpatialNav(): void {
     if (moveFocus(dir)) e.preventDefault();
   });
 }
+
+/**
+ * The TV app's Back button: sent to the page as Escape. Returns true when the page used it
+ * (went up a level, closed a menu); false at the top, and the app closes.
+ */
+(window as unknown as { __dsBack?: () => boolean }).__dsBack = () => {
+  const e = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+  (document.activeElement ?? document.body).dispatchEvent(e);
+  return e.defaultPrevented;
+};

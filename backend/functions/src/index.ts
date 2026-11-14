@@ -20,7 +20,8 @@ const db = getAdminFirestore(app);
 const auth = getAdminAuth(app);
 
 const SECRETS = ['GOOGLE_CLIENT_SECRET', 'TOKEN_KEY'];
-const opts = { secrets: SECRETS, cors: ORIGINS, region: REGION };
+// Small, mostly-waiting calls: a fraction of a CPU each (billed far below a full vCPU).
+const opts = { secrets: SECRETS, cors: ORIGINS, region: REGION, cpu: 'gcf_gen1' as const, memory: '256MiB' as const };
 const ADMINS = (process.env.ADMIN_EMAILS ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
 
 // ─── Google tokens ────────────────────────────────────────────────────────────
@@ -504,20 +505,36 @@ export const finishUploads = onCall(api.finishUploads, opts, async (req) => {
 
 // ─── linked accounts: hand files over to the owner ────────────────────────────
 
-async function sweepOne(shareId: string, deadline: number) {
+async function sweepOne(shareId: string, deadline: number, force = false) {
   const s = (await getDoc(shareRef(shareId))).data() as Share | undefined;
-  if (!s || !s.enabled || !s.linkedEmails?.length) return { moved: 0, overCap: 0, failed: 0, left: 0, errors: [] as string[] };
+  if (!s || !s.enabled || !s.linkedEmails?.length) return { moved: 0, overCap: 0, failed: 0, left: 0, errors: [] as string[], skipped: true };
   const owner = await driveFor(s.ownerUid);
   const linked = [];
   const errors: string[] = [];
+  // Walking a big shared tree costs about a minute; most ticks there is nothing new. Each linked
+  // account's change feed says whether it added files of its own since the last run: if none did,
+  // this tick ends here (one or two Drive calls, no walk).
+  const feeds: { uid: string; next: string }[] = [];
+  let anyNew = !!s.sweepLeft || force;
   for (const email of s.linkedEmails as string[]) {
     const u = await getDocs(query(collection(db, users), where('email', '==', email), limit(1)));
     if (u.empty) { errors.push(`${email}: has not linked yet (${ORIGINS[0]}/link)`); continue; }
     try {
-      linked.push({ email, drive: await driveFor(u.docs[0]!.id) });
+      const uid = u.docs[0]!.id;
+      const d = await driveFor(uid);
+      linked.push({ email, drive: d });
+      const stored = (await getDoc(driveDoc(uid))).data() as { feedToken?: string } | undefined;
+      if (!stored?.feedToken) { anyNew = true; feeds.push({ uid, next: await d.startPageToken() }); continue; }
+      const f = await d.newOwnFiles(stored.feedToken);
+      anyNew ||= f.any;
+      feeds.push({ uid, next: f.next });
     } catch {
       errors.push(`${email}: Drive access was revoked; they need to link again`);
     }
+  }
+  if (!anyNew) {
+    for (const f of feeds) await updateDoc(driveDoc(f.uid), { feedToken: f.next } as never);
+    return { moved: 0, overCap: 0, failed: 0, left: 0, errors, skipped: true };
   }
   // Save as we go: a run that is cut off keeps what it moved, and the dashboard fills in live.
   const save = async (items: SweepItem[]) => {
@@ -538,18 +555,22 @@ async function sweepOne(shareId: string, deadline: number) {
     lastError: errors.length ? errors.join('\n').slice(0, 2000) : deleteField(),
     sweepLeft: r.left ? r.left : deleteField(),
   } as never);
+  // Move the feed on only when nothing is left: otherwise the next tick sees the same files and goes on.
+  if (!r.left) for (const f of feeds) await updateDoc(driveDoc(f.uid), { feedToken: f.next } as never);
   const n = (st: string) => r.items.filter((i) => i.state === st).length;
-  return { moved: n('moved'), overCap: n('over-cap'), failed: n('failed'), left: r.left, errors };
+  return { moved: n('moved'), overCap: n('over-cap'), failed: n('failed'), left: r.left, errors, skipped: false };
 }
 
 export const sweepNow = onCall(api.sweepNow, { ...opts, timeoutSeconds: 120 }, async (req) => {
   const uid = admin(req);
   await ownShare(uid, req.data.shareId);
-  return sweepOne(req.data.shareId, Date.now() + 90_000);
+  const r = await sweepOne(req.data.shareId, Date.now() + 90_000, true);
+  return { moved: r.moved, overCap: r.overCap, failed: r.failed, left: r.left, errors: r.errors };
 });
 
 /** One tick: only shares with linked accounts are read (one query when there are none). */
-export const sweep = onSchedule({ schedule: process.env.SWEEP_SCHEDULE || 'every 5 minutes', region: REGION, secrets: SECRETS, timeoutSeconds: 540, memory: '256MiB' }, async () => {
+// cpu 'gcf_gen1': a fraction of a CPU (the sweep mostly waits on Drive), billed at a sixth of a full one.
+export const sweep = onSchedule({ schedule: process.env.SWEEP_SCHEDULE || 'every 5 minutes', region: REGION, secrets: SECRETS, timeoutSeconds: 540, memory: '256MiB', cpu: 'gcf_gen1' }, async () => {
   // Cloud Scheduler gives up on the call after 5 minutes: stop starting new hand-overs before that.
   // What is left waits for the next tick (sweepLeft on the share).
   const deadline = Date.now() + 250_000;

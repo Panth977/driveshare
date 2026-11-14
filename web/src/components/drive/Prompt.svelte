@@ -14,7 +14,7 @@
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="scrim" data-modal onkeydown={(e) => { if (isBack(e) && !(e.key === 'Backspace')) { e.stopPropagation(); oncancel(); } }} onpointerdown={(e) => { if (e.target === e.currentTarget) oncancel(); }}>
+<div class="scrim" data-modal onkeydown={(e) => { if (isBack(e) && !(e.key === 'Backspace')) { e.preventDefault(); e.stopPropagation(); oncancel(); } }} onpointerdown={(e) => { if (e.target === e.currentTarget) oncancel(); }}>
   <form class="dialog stack" onsubmit={(e) => { e.preventDefault(); onok(v.trim()); }}>
     <h2>{title}</h2>
     {#if text}<p class="muted" style="margin:0">{text}</p>{/if}

@@ -8,7 +8,7 @@
   import { nav } from '../lib/router.svelte.ts';
   import { toast } from '../lib/toast.svelte.ts';
   import { editable, isBack, tv } from '../lib/tv.svelte.ts';
-  import { ago, bytesOf, driveLink, duration, failText, isAudio, isFolder, isImage, isMedia, isPdf, isVideo, kindOf, originalUrl, thumb, type DComment, type DFile } from '../lib/gdrive.ts';
+  import { ago, bytesOf, driveLink, duration, failText, isAudio, isFolder, isImage, isMedia, isPdf, isVideo, kindOf, originalUrl, sortTv, thumb, type DComment, type DFile } from '../lib/gdrive.ts';
   import { children as cacheChildren } from '../lib/listcache.ts';
   import FileIcon from '../components/drive/FileIcon.svelte';
   import ShareDialog from '../components/drive/ShareDialog.svelte';
@@ -46,7 +46,7 @@
     const d = drive!;
     if (id === 'recent') return d.query(`(mimeType contains 'image/' or mimeType contains 'video/') and trashed = false`, { orderBy: 'modifiedTime desc', max: 500 });
     if (id === 'starred') return (await d.query('starred = true and trashed = false')).filter((f) => !isFolder(f));
-    if (!deep) return (await cacheChildren(d, id, (l) => { if (folderId === id && !deep) all = l.filter((f) => !isFolder(f)); }, { orderBy: 'name_natural' })).filter((f) => !isFolder(f));
+    if (!deep) return (await cacheChildren(d, id, (l) => { if (folderId === id && !deep) { const files = l.filter((f) => !isFolder(f)); all = tv.on ? sortTv(files) : files; } }, { orderBy: 'name_natural' })).filter((f) => !isFolder(f));
     // Subfolders too: breadth first, up to 5,000 files.
     const out: DFile[] = [];
     let level = [id];
@@ -66,7 +66,8 @@
     loadError = '';
     try {
       folder = VIRTUAL[folderId] ? { id: folderId, name: VIRTUAL[folderId]!, mimeType: 'virtual' } : await drive.get(folderId);
-      const files = await collect(folderId);
+      // On the TV the viewer steps through files in the same order as the TV grid.
+      const files = tv.on ? sortTv(await collect(folderId)) : await collect(folderId);
       all = files;
       const wanted = fileId ? (onlyMedia && files.some(isMedia) ? files.filter(isMedia) : files).findIndex((f) => f.id === fileId) : -1;
       if (fileId && wanted < 0 && onlyMedia) { onlyMedia = false; }
@@ -460,6 +461,8 @@
   .keys .kbd { margin: 0 0.1rem; }
   .hide .top, .hide .strip, .hide .nav, .hide .keys { opacity: 0; pointer-events: none; }
   .hide { cursor: none; }
+  :global(html.tv) .acts .tog, :global(html.tv) .keys { display: none; }
+  :global(html.tv) .strip button { width: 5.4rem; height: 3.4rem; }
   @media (max-width: 760px) {
     .viewer.withpanel { grid-template-columns: 1fr; }
     .panel { position: fixed; inset: auto 0 0 0; max-height: 60vh; grid-column: 1; border-radius: 16px 16px 0 0; z-index: 5; }

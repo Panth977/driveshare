@@ -17,7 +17,11 @@ export const users = collection('users', {
 
 /** The Drive connection: an encrypted refresh token. Only functions read or write it. */
 export const drive = collection('users/{uid}/private', {
-  fields: { refreshToken: f.string(), scope: f.string(), updatedAt: f.timestamp() },
+  fields: {
+    refreshToken: f.string(), scope: f.string(), updatedAt: f.timestamp(),
+    /** Drive change-feed position of a linked account: the sweep walks its shares only when it has new files. */
+    feedToken: f.optional(f.string()),
+  },
   indexes: [],
 });
 

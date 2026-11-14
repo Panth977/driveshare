@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { ScopeLevel } from '@driveshare/backend/shared';
   import { account } from '../lib/account.svelte.ts';
-  import { tv } from '../lib/tv.svelte.ts';
+  import { tv, inTvApp } from '../lib/tv.svelte.ts';
   import TvLogin from './TvLogin.svelte';
   let { level, title, children, qr = false }: { level: ScopeLevel; title: string; children?: import('svelte').Snippet; qr?: boolean } = $props();
   // On a TV the phone is the easy way in; elsewhere Google first, the QR code one click away.
@@ -32,8 +32,8 @@
       </div>
       {#if qr && showQr}
         <TvLogin />
-        <div class="or"><span>or</span></div>
-        <div class="row" style="justify-content:center">
+        {#if !inTvApp}<div class="or"><span>or</span></div>{/if}
+        <div class="row" style="justify-content:center" class:hidden={inTvApp}>
           <button class="big" disabled={account.busy} onclick={() => account.signIn(level)}><img src="/google.svg" alt="" class="g" />{account.busy ? 'Signing in…' : 'Sign in with Google on this screen'}</button>
           {#if !tv.on}<button class="ghost" onclick={() => (showQr = false)}>Hide QR code</button>{/if}
         </div>
@@ -61,6 +61,7 @@
   .gbtn { background: #fff; color: #1f1f1f; border-color: #fff; }
   .gbtn:hover { background: #e8ecf5; border-color: #e8ecf5; }
   .g { width: 1.1rem; height: 1.1rem; }
+  .hidden { display: none !important; }
   .or { display: flex; align-items: center; gap: 0.8rem; color: var(--faint); font-size: 0.8rem; }
   .or::before, .or::after { content: ''; flex: 1; border-top: 1px solid var(--line); }
 </style>
