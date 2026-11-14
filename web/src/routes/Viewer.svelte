@@ -10,6 +10,7 @@
   import { editable, isBack, tv } from '../lib/tv.svelte.ts';
   import { ago, bytesOf, driveLink, duration, failText, isAudio, isFolder, isImage, isMedia, isPdf, isVideo, kindOf, originalUrl, sortTv, thumb, type DComment, type DFile } from '../lib/gdrive.ts';
   import { children as cacheChildren } from '../lib/listcache.ts';
+  import { follow, sendToTv } from '../lib/remote.svelte.ts';
   import FileIcon from '../components/drive/FileIcon.svelte';
   import ShareDialog from '../components/drive/ShareDialog.svelte';
   import TopBar from '../components/TopBar.svelte';
@@ -46,7 +47,7 @@
     const d = drive!;
     if (id === 'recent') return d.query(`(mimeType contains 'image/' or mimeType contains 'video/') and trashed = false`, { orderBy: 'modifiedTime desc', max: 500 });
     if (id === 'starred') return (await d.query('starred = true and trashed = false')).filter((f) => !isFolder(f));
-    if (!deep) return (await cacheChildren(d, id, (l) => { if (folderId === id && !deep) { const files = l.filter((f) => !isFolder(f)); all = tv.on ? sortTv(files) : files; } }, { orderBy: 'name_natural' })).filter((f) => !isFolder(f));
+    if (!deep) return (await cacheChildren(d, id, (l) => { if (folderId === id && !deep) { const keep = cur?.id ?? fileId; const files = l.filter((f) => !isFolder(f)); all = tv.on ? sortTv(files) : files; const k = list?.findIndex((f) => f.id === keep) ?? -1; if (k >= 0) index = k; } }, { orderBy: 'name_natural' })).filter((f) => !isFolder(f));
     // Subfolders too: breadth first, up to 5,000 files.
     const out: DFile[] = [];
     let level = [id];
@@ -81,6 +82,35 @@
   }
   $effect(() => { void folderId; void deep; if (drive) void load(); });
   $effect(() => { localStorage.setItem('ds.v.media', onlyMedia ? '1' : '0'); });
+
+  // A new file id in the address (sent from a phone to this TV, same folder): jump to it.
+  // The file named in the address (opened, or sent from a phone to this TV): show it as soon as the
+  // list has it, also when it only appears in a fresher listing. Stepping on keeps `shown` as is.
+  let shown = '';
+  $effect(() => {
+    const id = fileId;
+    const l = list;
+    if (!id || !l || id === shown) return;
+    const k = l.findIndex((f) => f.id === id);
+    if (k >= 0) { shown = id; index = k; }
+  });
+
+  // Follow mode (phone/laptop): the TV shows what this viewer shows.
+  let sentId = '';
+  $effect(() => {
+    const c = cur;
+    if (!follow.on || !c || !folderId || c.id === sentId) return;
+    const t = setTimeout(() => {
+      sentId = c.id;
+      sendToTv({ kind: 'file', folderId, fileId: c.id, name: c.name }).catch((e) => toast.show(failText(e)));
+    }, 250);
+    return () => clearTimeout(t);
+  });
+  function toggleFollow() {
+    follow.toggle();
+    sentId = '';
+    toast.show(follow.on ? 'The TV now follows this screen' : 'Stopped showing on the TV', undefined, 2500);
+  }
 
   // Keep the URL on the file you are looking at (replace, so Back leaves the viewer).
   $effect(() => {
@@ -301,6 +331,7 @@
         {#if !VIRTUAL[folderId]}<label class="tog small"><input type="checkbox" bind:checked={deep} /> Subfolders</label>{/if}
         <button class="ghost icon" title="Star (*)" aria-label="Star" onclick={star}>{cur?.starred ? '★' : '☆'}</button>
         <button class="ghost" title="Comment (C)" onclick={openComments}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.4A8 8 0 1 1 21 12z"/></svg>Comment</button>
+        {#if !tv.on}<button class="ghost" class:live={follow.on} title="Show on the TV (it follows as you move)" aria-pressed={follow.on} onclick={toggleFollow}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>{follow.on ? 'On TV' : 'TV'}</button>{/if}
         <button class="ghost" title="Share link (S)" onclick={() => cur && (sharing = cur)}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>Share</button>
         <button class="ghost icon" title="Details (I)" aria-label="Details" onclick={() => (panel = panel === 'info' ? '' : 'info')}>ⓘ</button>
         {#if cur}<a class="btn ghost icon" title="Open in Google Drive" aria-label="Open in Google Drive" href={driveLink(cur)} target="_blank" rel="noopener">↗</a>{/if}
@@ -428,6 +459,7 @@
   .nm { font-weight: 640; }
   .star { color: var(--warn); }
   .acts { display: flex; align-items: center; gap: 0.25rem; flex-wrap: wrap; justify-content: flex-end; }
+  .live { color: var(--good); background: rgb(79 209 161 / 0.12); }
   .tog { display: inline-flex; flex-direction: row; align-items: center; gap: 0.35rem; color: var(--muted); font-weight: 500; padding: 0 0.4rem; white-space: nowrap; }
   .stage { position: relative; display: grid; place-items: center; overflow: hidden; min-height: 0; }
   /* Absolutely placed: a percentage height does not resolve inside the grid stage, which made

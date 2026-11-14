@@ -6,6 +6,7 @@
   import { mydrive } from '../lib/mydrive.svelte.ts';
   import { sizes } from '../lib/sizes.svelte.ts';
   import { transfers } from '../lib/transfer.svelte.ts';
+  import { sendToTv } from '../lib/remote.svelte.ts';
   import { canPickFolder, fromDrop, fromFileList, fromFiles, fromHandle, pickFolder } from '../lib/localfs.ts';
   import { toast } from '../lib/toast.svelte.ts';
   import { nav } from '../lib/router.svelte.ts';
@@ -205,6 +206,7 @@
     const list: MenuItem[] = [
       { label: folder ? 'Open' : 'Open in viewer', key: '↵', run: () => open(f) },
       ...(folder ? [{ label: 'Preview all, one by one', key: 'Space', run: () => preview(f) }] : []),
+      { label: folder ? 'Show on TV, one by one' : 'Show on TV', run: () => void tvSend(f) },
       { label: 'Share link…', key: 'S', run: () => (sharing = f), sep: true },
       { label: f.starred ? 'Remove star' : 'Star', key: '*', run: () => void star(f) },
       { label: 'Rename…', key: 'F2', run: () => rename(f) },
@@ -229,6 +231,13 @@
       { label: 'Preview everything here', run: () => preview(current), sep: true },
       { label: 'Refresh', run: () => void refresh(true) },
     ] };
+  }
+
+  async function tvSend(f: DFile) {
+    try {
+      await sendToTv(isFolder(f) ? { kind: 'show', folderId: f.id, name: f.name } : { kind: 'file', folderId: f.parents?.[0] ?? current, fileId: f.id, name: f.name });
+      toast.show(`Sent “${f.name}” to the TV`, undefined, 2500);
+    } catch (e) { toast.show(failText(e)); }
   }
 
   // ── uploads and syncs (lib/transfer.svelte.ts streams them; nothing is listed up front) ──

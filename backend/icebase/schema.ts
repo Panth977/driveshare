@@ -26,6 +26,24 @@ export const drive = collection('users/{uid}/private', {
 });
 
 /**
+ * Send to TV: what a phone (or laptop) asks the account's TV app to show. One doc, `now`, written by
+ * the account's own browsers (rules check the shape) and watched by its TV. No function involved.
+ */
+export const remote = collection('users/{uid}/remote', {
+  fields: {
+    /** folder: open it; show: show its photos one by one; file: show this file. */
+    kind: f.enum(['folder', 'show', 'file']),
+    folderId: f.string({ max: 128 }),
+    fileId: f.optional(f.string({ max: 128 })),
+    name: f.string({ max: 300 }),
+    /** A random id per send, so the same item sent twice still counts. */
+    nonce: f.string({ max: 40 }),
+    at: f.timestamp(),
+  },
+  indexes: [],
+});
+
+/**
  * A shared folder in the owner's Drive with a size cap. Written only by functions;
  * the owner reads it (rules). `secret` is the upload link's key.
  */
@@ -120,4 +138,4 @@ export const tvLogins = collection('tvLogins', {
   indexes: [],
 });
 
-export const schema = defineSchema({ users, drive, shares, uploads, transfers, tvLogins });
+export const schema = defineSchema({ users, drive, remote, shares, uploads, transfers, tvLogins });

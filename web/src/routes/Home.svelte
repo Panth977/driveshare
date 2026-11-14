@@ -1,6 +1,8 @@
 <script lang="ts">
   import { account } from '../lib/account.svelte.ts';
-  import { router } from '../lib/router.svelte.ts';
+  import { router, nav } from '../lib/router.svelte.ts';
+  import { watchSends } from '../lib/remote.svelte.ts';
+  import { toast } from '../lib/toast.svelte.ts';
   import { linked } from '../lib/linked.svelte.ts';
   import { demoMode } from '../lib/mydrive.svelte.ts';
   import TopBar from '../components/TopBar.svelte';
@@ -13,6 +15,17 @@
 
   // Linked accounts get the same app on their own Drive (My Drive, Viewer), plus the folders they are linked to.
   $effect(() => { linked.load(); });
+
+  // On the TV: open whatever a phone sends ("Send to TV").
+  $effect(() => {
+    if (!tv.on || !account.user) return;
+    return watchSends((i) => {
+      toast.show(`From your phone: ${i.name}`, undefined, 3000);
+      if (i.kind === 'folder') nav(`/drive/${i.folderId}`);
+      else if (i.kind === 'show') nav(`/view/${i.folderId}`);
+      else nav(`/view/${i.folderId}/${i.fileId}`);
+    });
+  });
 
   const view = $derived(/^\/view(?:\/([\w-]+))?(?:\/([\w-]+))?/.exec(router.path));
   const drive = $derived(/^\/drive(?:\/([\w-]+))?/.exec(router.path));

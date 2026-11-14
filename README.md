@@ -31,6 +31,11 @@ default in TV browsers, a toggle in the top bar elsewhere).
 - **Viewer**: a folder's files one by one. Arrow keys step, `Del` bins (with Undo), `C` comments (saved on
   the file in Drive), `S` makes a share link with a QR code, `I` details, `F` full screen. Videos stream.
 
+**Send to TV.** In the viewer, **TV** makes the TV app show what you are looking at and follow as you
+step through (the button turns into *On TV*); in My Drive, right-click › *Show on TV*. The phone writes
+one small Firestore document under your account (`users/{uid}/remote/now`) and the TV app watches it:
+no function runs.
+
 **Signing in on a TV**: the TV shows a QR code; scan it with a phone that is signed in, check the code,
 tap Approve. The TV gets its own session.
 
