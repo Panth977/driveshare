@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  export function autofocus(el: HTMLElement) { queueMicrotask(() => el.focus()); }
+  export function autofocus(el: HTMLElement) { setTimeout(() => el.focus(), 60); }
 </script>
 
 <script lang="ts">
@@ -108,7 +108,7 @@
     // A held OK button repeats its key: the first repeat means "hold" (remotes repeat after ~0.4 s).
     if (e.repeat) { if (!held) { held = true; if (pressTimer) clearTimeout(pressTimer); menuFor = f; } return; }
     held = false;
-    pressTimer = setTimeout(() => { held = true; menuFor = f; }, 500);
+    pressTimer = setTimeout(() => { held = true; menuFor = f; }, 400);
   }
   function up(e: KeyboardEvent, f: DFile) {
     if (e.key !== 'Enter') return;
@@ -145,7 +145,19 @@
     }
   }
 
-  onMount(() => { if (location.pathname === '/') nav('/drive', true); });
+  onMount(() => {
+    if (location.pathname === '/') nav('/drive', true);
+    // The TV app calls this when OK is held on the remote: actions for the focused tile.
+    const w = window as unknown as { __dsHold?: () => boolean };
+    w.__dsHold = () => {
+      const id = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-id]')?.dataset.id;
+      const f = id ? items?.find((x) => x.id === id) : undefined;
+      if (!f || menuFor || sharing || confirmBin) return false;
+      menuFor = f;
+      return true;
+    };
+    return () => { delete w.__dsHold; };
+  });
   const cols = 5;
 </script>
 
@@ -207,7 +219,7 @@
             {#if f.starred}<span class="star">★</span>{/if}
           </div>
           <div class="name">{f.name}</div>
-          <div class="meta num">{isFolder(f) ? (t ? `${t.files.toLocaleString()} files · ${formatBytes(t.bytes)}` : 'Folder') : `${kindOf(f)} · ${formatBytes(bytesOf(f))} · ${ago(f.modifiedTime)}`}</div>
+          <div class="meta num">{isFolder(f) ? (t && t.files ? `${t.files.toLocaleString()} files · ${formatBytes(t.bytes)}` : 'Folder') : `${kindOf(f)} · ${formatBytes(bytesOf(f))} · ${ago(f.modifiedTime)}`}</div>
         </button>
       {/each}
     </div>

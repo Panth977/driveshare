@@ -31,6 +31,8 @@ public class MainActivity extends Activity {
     private FrameLayout root;
     private View fullscreen;
     private WebChromeClient.CustomViewCallback fullscreenDone;
+    /** OK was held: the page got "hold" (its actions menu); the release must not also click. */
+    private boolean held;
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -92,6 +94,21 @@ public class MainActivity extends Activity {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent e) {
+        // The web view turns OK into Enter only on release, so the page cannot tell a hold from a
+        // tap. Held OK (the remote repeats the key) calls window.__dsHold() instead: the actions menu.
+        int code = e.getKeyCode();
+        if (code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER || code == KeyEvent.KEYCODE_NUMPAD_ENTER) {
+            if (e.getAction() == KeyEvent.ACTION_DOWN) {
+                if (e.getRepeatCount() == 0) { held = false; return super.dispatchKeyEvent(e); }
+                if (!held) { held = true; web.evaluateJavascript("window.__dsHold ? window.__dsHold() : false", null); }
+                return true;
+            }
+            if (e.getAction() == KeyEvent.ACTION_UP && held) {
+                held = false;
+                // Let the web view finish the key without a click.
+                return super.dispatchKeyEvent(KeyEvent.changeFlags(e, e.getFlags() | KeyEvent.FLAG_CANCELED));
+            }
+        }
         // Back: the page goes up a level (it answers whether it did); at the top, the app closes.
         if (e.getKeyCode() == KeyEvent.KEYCODE_BACK) {
             if (e.getAction() == KeyEvent.ACTION_UP) {

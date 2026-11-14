@@ -3,6 +3,7 @@
 import { RestDrive, failText, startMediaWorker, type DriveApi, type Quota } from './gdrive.ts';
 import { errorText } from './icebase.ts';
 import { sizes } from './sizes.svelte.ts';
+import { tv } from './tv.svelte.ts';
 
 export const demoMode = import.meta.env.DEV && new URLSearchParams(location.search).has('demo');
 
@@ -28,7 +29,9 @@ class MyDrive {
       this.quota = about.quota;
       this.rootId = root.id;
       this.state = 'ready';
-      void sizes.start(d, about.email);
+      // Folder sizes need a listing of the whole Drive: worth it on a computer, too heavy for a TV's
+      // CPU (the TV layout shows folders without sizes).
+      if (!tv.on) void sizes.start(d, about.email);
     } catch (e) {
       const t = errorText(e);
       if (/needs-full-drive|drive-not-connected/.test(t)) { this.state = 'needs-full'; return; }

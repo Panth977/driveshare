@@ -16,8 +16,8 @@ android {
         applicationId = "app.driveshare.tv"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
         // The site the app opens (your own deployment: change it here).
         buildConfigField("String", "SITE", "\"https://driveshare-p977.web.app\"")
     }
