@@ -24,6 +24,7 @@
   import Saving from '../components/Saving.svelte';
   import { activity } from '../lib/activity.svelte.ts';
   import { profiles } from '../lib/profiles.svelte.ts';
+  import { forgetFolder, recentAsFiles, type RecentFolder } from '../lib/recent.ts';
 
   let { place }: { place: string } = $props();
 
@@ -58,7 +59,8 @@
     error = '';
     limit = 60;
     try {
-      if (virtual === 'recent') { folder = null; items = await d.query(`(mimeType contains 'image/' or mimeType contains 'video/') and trashed = false`, { orderBy: 'modifiedTime desc', max: 300 }); }
+      // Recent = folders you looked through lately (newest first), each with the photo you were on.
+      if (virtual === 'recent') { folder = null; await Promise.resolve(); items = recentAsFiles(); }
       else if (virtual === 'starred') { folder = null; items = await d.query('starred = true and trashed = false', { orderBy: 'folder,name_natural' }); }
       else if (virtual === 'shared') { folder = null; items = await d.query('sharedWithMe = true and trashed = false', { orderBy: 'folder,modifiedTime desc', max: 300 }); }
       else if (folderId) {
@@ -91,13 +93,17 @@
     if (items && i > limit - 15 && limit < items.length) limit += 60;
   }
 
+  const recentOf = (f: DFile) => (f as DFile & { recent?: RecentFolder }).recent;
   function open(f: DFile) {
     remember(f);
-    if (isFolder(f)) nav(`/drive/${f.id}`);
+    // A recent folder carries on in the viewer where you left it.
+    const r = recentOf(f);
+    if (r) nav(`/view/${r.id}${r.file ? `/${r.file.id}` : ''}${r.deep ? '?deep=1' : ''}`);
+    else if (isFolder(f)) nav(`/drive/${f.id}`);
     else nav(`/view/${f.parents?.[0] ?? folderId ?? 'recent'}/${f.id}`);
   }
   function previewAll(f?: DFile, deep = false) {
-    const id = f ? f.id : virtual === 'recent' ? 'recent' : virtual === 'starred' ? 'starred' : folderId;
+    const id = f ? f.id : virtual === 'recent' ? '' : virtual === 'starred' ? 'starred' : folderId;
     if (id) nav(`/view/${id}${deep ? '?deep=1' : ''}`);
   }
 
@@ -218,24 +224,26 @@
   {:else if !shown}
     <div class="grid" style:--cols={cols}>{#each Array(10) as _}<div class="tile skel"><div class="art skeleton"></div></div>{/each}</div>
   {:else if shown.length === 0}
-    <div class="msg">Nothing here.</div>
+    <div class="msg">{virtual === 'recent' ? 'Folders you look through show up here, so you can carry on where you left off.' : 'Nothing here.'}</div>
   {:else}
     <div class="grid" bind:this={gridEl} style:--cols={cols}>
       {#each shown as f (f.id)}
         {@const t = isFolder(f) ? sizes.of(f.id) : undefined}
+        {@const r = recentOf(f)}
         <button class="tile" data-id={f.id}
           onfocus={() => remember(f)}
           onkeydown={(e) => down(e, f)} onkeyup={(e) => up(e, f)}
           onclick={(e) => { if (e.detail > 0) open(f); }}
           oncontextmenu={(e) => { e.preventDefault(); menuFor = f; }}>
-          <div class="art" class:folder={isFolder(f)}>
-            {#if !isFolder(f) && !noThumb[f.id] && thumb(f, 520)}<img src={thumb(f, 520)} alt="" loading="lazy" referrerpolicy="no-referrer" onerror={() => (noThumb = { ...noThumb, [f.id]: true })} />
+          <div class="art" class:folder={isFolder(f) && !r?.file}>
+            {#if r?.file && !noThumb[r.file.id] && thumb(r.file as DFile, 520)}<img src={thumb(r.file as DFile, 520)} alt="" loading="lazy" referrerpolicy="no-referrer" onerror={() => (noThumb = { ...noThumb, [r.file!.id]: true })} /><span class="badge">▶ Carry on</span>
+            {:else if !isFolder(f) && !noThumb[f.id] && thumb(f, 520)}<img src={thumb(f, 520)} alt="" loading="lazy" referrerpolicy="no-referrer" onerror={() => (noThumb = { ...noThumb, [f.id]: true })} />
             {:else}<FileIcon file={f} size={4} shared={f.shared} />{/if}
             {#if isVideo(f)}<span class="badge">▶ {duration(f.videoMediaMetadata?.durationMillis)}</span>{/if}
             {#if f.starred}<span class="star">★</span>{/if}
           </div>
           <div class="name">{f.name}</div>
-          <div class="meta num">{isFolder(f) ? (t && t.files ? `${t.files.toLocaleString()} files · ${formatBytes(t.bytes)}` : 'Folder') : `${kindOf(f)} · ${formatBytes(bytesOf(f))} · ${ago(f.modifiedTime)}`}</div>
+          <div class="meta num">{r ? `${t && t.files ? `${t.files.toLocaleString()} files · ` : ''}viewed ${ago(new Date(r.at).toISOString())}` : isFolder(f) ? (t && t.files ? `${t.files.toLocaleString()} files · ${formatBytes(t.bytes)}` : 'Folder') : `${kindOf(f)} · ${formatBytes(bytesOf(f))} · ${ago(f.modifiedTime)}`}</div>
         </button>
       {/each}
     </div>
@@ -260,12 +268,16 @@
       {:else}
         {@const f = menuFor}
         <h2 class="ellipsis">{f.name}</h2>
-        <button use:autofocus onclick={() => { menuFor = null; open(f); }}>{isFolder(f) ? 'Open' : 'View'}</button>
-        {#if isFolder(f)}<button onclick={() => { menuFor = null; previewAll(f); }}>Show everything, one by one</button>
+        {@const r = recentOf(f)}
+        <button use:autofocus onclick={() => { menuFor = null; open(f); }}>{r ? (r.file ? `Carry on from ${r.file.name}` : 'Show everything, one by one') : isFolder(f) ? 'Open' : 'View'}</button>
+        {#if r}<button onclick={() => { menuFor = null; nav(`/drive/${f.id}`); }}>Open folder</button>
+          <button onclick={() => { menuFor = null; previewAll(f); }}>Start from the first</button>
+          <button onclick={() => { menuFor = null; forgetFolder(f.id); items = items?.filter((x) => x.id !== f.id) ?? null; restoreFocus(); }}>Remove from Recent</button>
+        {:else if isFolder(f)}<button onclick={() => { menuFor = null; previewAll(f); }}>Show everything, one by one</button>
           <button onclick={() => { menuFor = null; previewAll(f, true); }}>Show everything, with subfolders</button>{/if}
         {#if profiles.can('share')}<button onclick={async () => { menuFor = null; if (await profiles.allow('share', (t) => toast.show(t))) sharing = f; }}>Share link (QR code)</button>{/if}
-        {#if profiles.can('edit')}<button onclick={() => { menuFor = null; void star(f); restoreFocus(); }}>{f.starred ? 'Remove star' : 'Star'}</button>{/if}
-        {#if profiles.can('bin')}<button class="danger" onclick={async () => { menuFor = null; if (await profiles.allow('bin', (t) => toast.show(t))) confirmBin = f; else restoreFocus(); }}>Move to bin</button>{/if}
+        {#if profiles.can('edit') && !r}<button onclick={() => { menuFor = null; void star(f); restoreFocus(); }}>{f.starred ? 'Remove star' : 'Star'}</button>{/if}
+        {#if profiles.can('bin') && !r}<button class="danger" onclick={async () => { menuFor = null; if (await profiles.allow('bin', (t) => toast.show(t))) confirmBin = f; else restoreFocus(); }}>Move to bin</button>{/if}
         <button onclick={() => { menuFor = null; restoreFocus(); }}>Close</button>
       {/if}
     </div>

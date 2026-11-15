@@ -14,6 +14,7 @@
   import { follow, sendToTv } from '../lib/remote.svelte.ts';
   import { profiles } from '../lib/profiles.svelte.ts';
   import { rotateBlob } from '../lib/rotate.ts';
+  import { noteFolder } from '../lib/recent.ts';
   import { sendFile } from '../lib/upload.ts';
   import FileIcon from '../components/drive/FileIcon.svelte';
   import ShareDialog from '../components/drive/ShareDialog.svelte';
@@ -47,6 +48,18 @@
 
   const list = $derived(all ? (onlyMedia && all.some(isMedia) ? all.filter(isMedia) : all) : null);
   const cur = $derived(list?.[Math.min(index, (list?.length ?? 1) - 1)]);
+  // A video starts loading (and playing) only once you stay on it for a second, so stepping past
+  // videos with the arrows does not download each one. OK or a click starts it at once.
+  let videoGo = $state(false);
+  // (Only the id: starring or renaming the video must not reload it.)
+  const videoId = $derived(cur && isVideo(cur) ? cur.id : '');
+  $effect(() => {
+    const id = videoId;
+    videoGo = false;
+    if (!id) return;
+    const t = setTimeout(() => (videoGo = true), 1000);
+    return () => clearTimeout(t);
+  });
 
   async function collect(id: string): Promise<DFile[]> {
     const d = drive!;
@@ -99,6 +112,7 @@
       if (folder && !VIRTUAL[folderId]) {
         recents = [{ id: folder.id, name: folder.id === mydrive.rootId ? 'My Drive' : folder.name }, ...recents.filter((r) => r.id !== folder!.id)].slice(0, 8);
         localStorage.setItem('ds.v.recent', JSON.stringify(recents));
+        noteFolder(recents[0]!, list?.[index], deep);
       }
     } catch (e) { loadError = failText(e); }
   }
@@ -134,7 +148,15 @@
     toast.show(follow.on ? 'The TV now follows this screen' : 'Stopped showing on the TV', undefined, 2500);
   }
 
-  // Keep the URL on the file you are looking at (replace, so Back leaves the viewer).
+  // Keep the URL on the file you are looking at (replace, so Back leaves the viewer), and remember it
+  // for Recent (folders you looked through, carrying on from this file).
+  $effect(() => {
+    const c = cur, fo = folder;
+    if (c && fo && folderId && !VIRTUAL[folderId] && fo.id === folderId) {
+      const t = setTimeout(() => noteFolder({ id: fo.id, name: fo.id === mydrive.rootId ? 'My Drive' : fo.name }, c, deep), 600);
+      return () => clearTimeout(t);
+    }
+  });
   $effect(() => {
     const c = cur;
     if (c && folderId && c.id !== fileId) history.replaceState(null, '', `/view/${folderId}/${c.id}`);
@@ -418,7 +440,8 @@
       }
       case 'ArrowDown': if (zoom > 1) pan(0, 1); else { chrome = !chrome; if (chrome) wake(); } return stop();
       case 'Enter':
-        if (videoEl) { videoEl.paused ? void videoEl.play() : videoEl.pause(); wake(); }
+        if (videoId && !videoGo) { videoGo = true; wake(); }
+        else if (videoEl) { videoEl.paused ? void videoEl.play() : videoEl.pause(); wake(); }
         else { chrome = !chrome; if (chrome) wake(); }
         return stop();
     }
@@ -456,7 +479,8 @@
       case '*': case 'ColorF2Yellow': void star(); break;
       case 'f': case 'F': void toggleFull(); break;
       case ' ': case 'MediaPlayPause': case 'Enter':
-        if (videoEl) { videoEl.paused ? void videoEl.play() : videoEl.pause(); }
+        if (videoId && !videoGo) videoGo = true;
+        else if (videoEl) { videoEl.paused ? void videoEl.play() : videoEl.pause(); }
         else if (e.key === 'Enter') { chrome = !chrome; }
         else go(index + 1);
         break;
@@ -585,7 +609,13 @@
         {#key cur.id}
           {#if isVideo(cur)}
             <!-- svelte-ignore a11y_media_has_caption -->
-            <video bind:this={videoEl} src={mydrive.drive.streamUrl(cur)} poster={thumb(cur, px(cur))} controls autoplay playsinline onclick={(e) => e.stopPropagation()}></video>
+            {#if videoGo}
+              <video bind:this={videoEl} src={mydrive.drive.streamUrl(cur)} poster={thumb(cur, px(cur))} controls autoplay playsinline onclick={(e) => e.stopPropagation()}></video>
+            {:else}
+              <!-- Passing by: only the picture; the video loads once you stay a second (or press OK). -->
+              {#if thumb(cur, px(cur))}<img class="pic" src={thumb(cur, px(cur))} alt={cur.name} referrerpolicy="no-referrer" decoding="async" draggable="false" />{/if}
+              <button class="vwait" aria-label="Play" onclick={(e) => { e.stopPropagation(); videoGo = true; }}><svg viewBox="0 0 24 24" width="1em" height="1em"><path d="M8 5v14l11-7z" fill="currentColor" /></svg></button>
+            {/if}
           {:else if isImage(cur)}
             <img class="pic" class:zoomed={zoom > 1} src={full[cur.id] ?? thumb(cur, px(cur))} alt={cur.name} referrerpolicy="no-referrer" decoding="async" draggable="false" style={picStyle(cur)} />
           {:else if isAudio(cur)}
@@ -702,6 +732,9 @@
   /* Absolutely placed: a percentage height does not resolve inside the grid stage, which made
      pictures fill the width and get cropped. Now the whole picture always fits. */
   .pic.zoomed { cursor: grab; }
+  .vwait { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 4.5rem; height: 4.5rem; border-radius: 50%; display: grid; place-items: center; font-size: 2rem; color: #fff; background: rgb(0 0 0 / 0.45); border: 2px solid rgb(255 255 255 / 0.7); }
+  .vwait::after { content: ''; position: absolute; inset: -6px; border-radius: 50%; border: 3px solid transparent; border-top-color: #fff; animation: vwait 1s linear forwards; }
+  @keyframes vwait { from { transform: rotate(0); } to { transform: rotate(360deg); } }
   .pic, video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; animation: fade 0.18s ease-out; }
   .small-pic { position: static; width: auto; height: auto; max-width: 100%; max-height: 50vh; border-radius: 12px; }
   @keyframes fade { from { opacity: 0.2; } }

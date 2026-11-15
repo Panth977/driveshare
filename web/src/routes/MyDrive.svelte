@@ -22,6 +22,7 @@
   import Toast from '../components/Toast.svelte';
   import Saving from '../components/Saving.svelte';
   import { activity } from '../lib/activity.svelte.ts';
+  import { recentAsFiles } from '../lib/recent.ts';
 
   let { folderId }: { folderId: string } = $props();
 
@@ -77,7 +78,9 @@
     if (!drive) return;
     loadError = '';
     try {
-      if (virtual === 'recent') items = await drive.query(`mimeType != 'application/vnd.google-apps.folder' and trashed = false`, { orderBy: 'modifiedTime desc', max: 200 });
+      // Recent = folders you looked through lately (newest first; "modified" shows when you viewed it).
+      // (After a tick: run synchronously inside the reload effect, setting `items` would re-trigger it.)
+      if (virtual === 'recent') { await Promise.resolve(); items = recentAsFiles(); }
       else if (virtual === 'shared') items = await drive.query('sharedWithMe = true and trashed = false', { orderBy: 'folder,modifiedTime desc', max: 500 });
       else if (virtual === 'starred') items = await drive.query('starred = true and trashed = false', { orderBy: 'folder,name_natural' });
       else if (virtual === 'search') items = q.trim() ? await drive.query(`name contains '${q.trim().replace(/\\/g, '\\\\').replace(/'/g, "\\'")}' and trashed = false`, { orderBy: 'folder,modifiedTime desc', max: 300 }) : [];
@@ -135,13 +138,17 @@
       return c * d;
     });
   }
-  const shown = $derived(items ? sorted(items) : null);
+  // Recent keeps its own order (last viewed first) unless you pick a column.
+  let recentSorted = $state(false);
+  $effect(() => { void virtual; recentSorted = false; });
+  const shown = $derived(items ? (virtual === 'recent' && !recentSorted ? items : sorted(items)) : null);
   const here = $derived(current ? sizes.of(current) : undefined);
   const maxSize = $derived(shown ? Math.max(1, ...shown.map(sizeOf)) : 1);
   const sel = $derived(shown?.find((f) => f.id === selected));
   const title = $derived(virtual ? VIRTUAL[virtual]! : path.at(-1)?.id === mydrive.rootId ? 'My Drive' : (path.at(-1)?.name ?? ''));
 
   function setSort(k: SortKey) {
+    recentSorted = true;
     if (sortKey === k) sortDir = sortDir === 1 ? -1 : 1;
     else { sortKey = k; sortDir = k === 'size' || k === 'modified' ? -1 : 1; }
   }
