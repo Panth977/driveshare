@@ -95,7 +95,12 @@
     if (!drive) return;
     items = null;
     selected = '';
-    void refresh(false).then(() => { if (!selected && items?.[0]) selected = items[0].id; });
+    void refresh(false).then(() => {
+      // Back from the viewer: the file you were looking at last is selected.
+      const back = current ? sessionStorage.getItem(`ds.sel.${current}`) : null;
+      if (back && items?.some((f) => f.id === back)) { selected = back; sessionStorage.removeItem(`ds.sel.${current}`); queueMicrotask(() => document.querySelector<HTMLElement>(`[data-id="${CSS.escape(back)}"]`)?.scrollIntoView({ block: 'center' })); }
+      else if (!selected && items?.[0]) selected = items[0].id;
+    });
     void buildPath();
   });
 
@@ -320,7 +325,7 @@
     });
   }
   function key(e: KeyboardEvent) {
-    if (menu || prompt || sharing || editable(e.target) || !shown) return;
+    if (menu || prompt || sharing || editable(e.target) || !shown || e.defaultPrevented) return;
     const i = Math.max(0, shown.findIndex((f) => f.id === selected));
     const f = shown[i];
     const step = rowStep();

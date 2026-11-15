@@ -19,7 +19,74 @@ self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
 self.addEventListener('message', (e) => {
   if (e.data && e.data.type === 'token') token = e.data.token;
+  // The viewer is about to show a video: fetch its first and last bytes now (see warm()).
+  if (e.data && e.data.type === 'warm' && e.data.id && e.data.size) e.waitUntil(warm({ clientId: e.source && e.source.id }, e.data.id, Number(e.data.size)).catch(() => {}));
 });
+
+// ── video start-up: a video needs its first bytes and, for most phone videos, its index (the
+// "moov" box), which sits at the very end. Each request to Drive takes about a second to answer,
+// and playing used to need three in a row. While the viewer waits its one second on a video (or
+// shows the file before it), we fetch the first 256 KB and the last 1 MB and keep them in memory, so
+// the start (and the index) are answered at once and only the rest of the stream waits on Drive.
+const HEAD = 256 << 10;
+const TAIL = 1 << 20;
+const warmed = new Map(); // id -> { size, head: Promise<Uint8Array|null>, tail: Promise<{start, bytes}|null> }
+function warm(e, id, size) {
+  if (!size || size < 2 * (HEAD + TAIL)) return Promise.resolve();
+  let w = warmed.get(id);
+  if (w && w.size === size) { warmed.delete(id); warmed.set(id, w); return Promise.all([w.head, w.tail]); }
+  const grab = (start, end) => authed(e, `${API}${encodeURIComponent(id)}?alt=media`, { range: `bytes=${start}-${end}` })
+    .then((r) => (r.status === 206 ? r.arrayBuffer() : null)).then((b) => (b ? new Uint8Array(b) : null)).catch(() => null);
+  const tailStart = size - TAIL;
+  w = { size, head: grab(0, HEAD - 1), tail: grab(tailStart, size - 1).then((bytes) => (bytes ? { start: tailStart, bytes } : null)) };
+  warmed.set(id, w);
+  while (warmed.size > 12) warmed.delete(warmed.keys().next().value);
+  return Promise.all([w.head, w.tail]);
+}
+
+function ranged(bytes, start, end, size, type) {
+  return new Response(bytes, { status: 206, headers: { 'content-type': type, 'content-length': String(bytes.length), 'content-range': `bytes ${start}-${end}/${size}`, 'accept-ranges': 'bytes' } });
+}
+
+/** Answer a range from the warmed head/tail when possible (the head continues with a live stream). */
+async function fromWarm(e, id, range, size, type) {
+  const w = warmed.get(id);
+  const m = /bytes=(\d+)-(\d*)/.exec(range || 'bytes=0-');
+  if (!w || w.size !== size || !m) return null;
+  const start = Number(m[1]);
+  const end = m[2] ? Math.min(Number(m[2]), size - 1) : size - 1;
+  // Only wait for the part this request needs (and only if it is the warmed part at all).
+  if (start >= size - TAIL) {
+    const tail = await w.tail;
+    return tail ? ranged(tail.bytes.subarray(start - tail.start, end - tail.start + 1), start, end, size, type) : null;
+  }
+  if (start >= HEAD) return null;
+  const head = await w.head;
+  if (!head || start >= head.length) return null;
+  if (end < head.length) return ranged(head.subarray(start, end + 1), start, end, size, type);
+  // The cached start at once, then the rest straight from Drive.
+  const first = head.subarray(start);
+  // Ask Drive for the rest right away (its answer takes about a second), and hand out the
+  // cached start meanwhile.
+  const ctrl = new AbortController();
+  const rest = authed(e, `${API}${encodeURIComponent(id)}?alt=media`, { range: `bytes=${head.length}-${end}` }, ctrl.signal);
+  rest.catch(() => {});
+  let reader = null;
+  const body = new ReadableStream({
+    start(c) { c.enqueue(first); },
+    async pull(c) {
+      if (!reader) {
+        const res = await rest;
+        if (res.status !== 206 || !res.body) { c.error(new Error(`Drive ${res.status}`)); return; }
+        reader = res.body.getReader();
+      }
+      const { done, value } = await reader.read();
+      if (done) c.close(); else c.enqueue(value);
+    },
+    cancel() { ctrl.abort(); if (reader) reader.cancel().catch(() => {}); },
+  });
+  return new Response(body, { status: 206, headers: { 'content-type': type, 'content-length': String(end - start + 1), 'content-range': `bytes ${start}-${end}/${size}`, 'accept-ranges': 'bytes' } });
+}
 
 async function askToken(clientId, stale) {
   const list = clientId ? [await self.clients.get(clientId)] : await self.clients.matchAll({ type: 'window' });
@@ -37,13 +104,13 @@ async function askToken(clientId, stale) {
 }
 
 /** fetch with the owner's token; asks the page for a new one once if Google says 401. */
-async function authed(e, url, headers = {}) {
+async function authed(e, url, headers = {}, signal) {
   const client = e.clientId || e.resultingClientId;
   if (!token) token = await askToken(client);
-  let res = await fetch(url, { headers: { ...headers, authorization: `Bearer ${token}` } });
+  let res = await fetch(url, { headers: { ...headers, authorization: `Bearer ${token}` }, signal });
   if (res.status === 401) {
     token = await askToken(client, token);
-    res = await fetch(url, { headers: { ...headers, authorization: `Bearer ${token}` } });
+    res = await fetch(url, { headers: { ...headers, authorization: `Bearer ${token}` }, signal });
   }
   return res;
 }
@@ -70,6 +137,9 @@ function plain(res, extra = {}) {
 async function media(e, url) {
   const id = decodeURIComponent(url.pathname.slice('/__media/'.length));
   const range = e.request.headers.get('range');
+  const size0 = Number(url.searchParams.get('size') || 0);
+  const hit = await fromWarm(e, id, range, size0, url.searchParams.get('type') || 'video/mp4').catch(() => null);
+  if (hit) return hit;
   const res = await authed(e, `${API}${encodeURIComponent(id)}?alt=media`, range ? { range } : {});
   const out = plain(res, { 'accept-ranges': 'bytes' });
   // Google's CORS answer hides Content-Range, which a <video> needs to seek: rebuild it from the

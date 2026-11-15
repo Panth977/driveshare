@@ -15,7 +15,7 @@
   import { nav } from '../lib/router.svelte.ts';
   import { toast } from '../lib/toast.svelte.ts';
   import { isBack, tv, inTvApp } from '../lib/tv.svelte.ts';
-  import { children as cachedChildren } from '../lib/listcache.ts';
+  import { children as cachedChildren, folderMeta, peek } from '../lib/listcache.ts';
   import { ago, bytesOf, duration, failText, isFolder, isVideo, kindOf, sortTv, thumb, type DFile } from '../lib/gdrive.ts';
   import FileIcon from '../components/drive/FileIcon.svelte';
   import ShareDialog from '../components/drive/ShareDialog.svelte';
@@ -55,7 +55,10 @@
   async function load() {
     const d = drive;
     if (!d) return;
-    items = null;
+    // A folder seen lately: drawn at once from memory (no empty tiles while it is asked again).
+    const quick = !virtual && folderId ? (peek(folderId) ?? peek(folderId, { orderBy: 'name_natural' })) : undefined;
+    items = quick ? sortTv(quick) : null;
+    if (quick) folder = folderMeta.get(folderId) ?? folder;
     error = '';
     limit = 60;
     try {
@@ -64,7 +67,9 @@
       else if (virtual === 'starred') { folder = null; items = await d.query('starred = true and trashed = false', { orderBy: 'folder,name_natural' }); }
       else if (virtual === 'shared') { folder = null; items = await d.query('sharedWithMe = true and trashed = false', { orderBy: 'folder,modifiedTime desc', max: 300 }); }
       else if (folderId) {
-        folder = folderId === mydrive.rootId ? { id: folderId, name: 'My Drive', mimeType: 'application/vnd.google-apps.folder' } : await d.get(folderId).catch(() => null);
+        folder = folderId === mydrive.rootId ? { id: folderId, name: 'My Drive', mimeType: 'application/vnd.google-apps.folder' } : (folderMeta.get(folderId) ?? (await d.get(folderId).catch(() => null)));
+        if (folder) folderMeta.set(folderId, folder);
+        if (quick) { await tick(); restoreFocus(); }
         items = sortTv(await cachedChildren(d, folderId, (l) => { if (place === (folderId === mydrive.rootId ? '' : folderId)) items = sortTv(l); }));
       }
       await tick();
@@ -82,6 +87,9 @@
   const focusKey = () => `ds.tvfocus.${place || 'root'}`;
   function restoreFocus() {
     const id = sessionStorage.getItem(focusKey());
+    // The tile may be further down than what is drawn yet (the viewer stepped far): draw up to it.
+    const at = id && items ? items.findIndex((x) => x.id === id) : -1;
+    if (at >= limit) { limit = Math.min(items!.length, at + 30); void tick().then(restoreFocus); return; }
     const el = (id && gridEl?.querySelector<HTMLElement>(`[data-id="${CSS.escape(id)}"]`)) || gridEl?.querySelector<HTMLElement>('[data-id]') || document.querySelector<HTMLElement>('.places button.on');
     el?.focus({ preventScroll: true });
     el?.scrollIntoView({ block: 'center' });
@@ -152,6 +160,8 @@
 
   function key(e: KeyboardEvent) {
     if (menuFor || sharing || confirmBin) return;
+    // A key the viewer already used (its Back brought us here) is not ours to act on again.
+    if (e.defaultPrevented) return;
     if (isBack(e)) {
       // Handled = preventDefault, so the TV app knows to stay open; at the top it closes.
       if (!virtual && folder && folderId !== mydrive.rootId) {

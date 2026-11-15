@@ -1,7 +1,7 @@
 <script lang="ts">
   // The viewer: every file of a folder, one by one. Arrow keys (or the remote) step through;
   // Delete bins the one on screen (with Undo); C comments; S makes a share link; I shows details.
-  import { onDestroy, onMount, tick } from 'svelte';
+  import { onDestroy, onMount, tick, untrack } from 'svelte';
   import { formatBytes } from '@driveshare/backend/shared';
   import { mydrive } from '../lib/mydrive.svelte.ts';
   import { sizes } from '../lib/sizes.svelte.ts';
@@ -9,8 +9,8 @@
   import { toast } from '../lib/toast.svelte.ts';
   import { activity } from '../lib/activity.svelte.ts';
   import { editable, isBack, tv } from '../lib/tv.svelte.ts';
-  import { ago, bytesOf, driveLink, duration, failText, isAudio, isFolder, isImage, isMedia, isPdf, isVideo, kindOf, originalUrl, sortTv, thumb, type DComment, type DFile } from '../lib/gdrive.ts';
-  import { children as cacheChildren } from '../lib/listcache.ts';
+  import { warmVideo, ago, bytesOf, driveLink, duration, failText, isAudio, isFolder, isImage, isMedia, isPdf, isVideo, kindOf, originalUrl, sortTv, thumb, type DComment, type DFile } from '../lib/gdrive.ts';
+  import { children as cacheChildren, folderMeta, noteUpdate, peek } from '../lib/listcache.ts';
   import { follow, sendToTv } from '../lib/remote.svelte.ts';
   import { profiles } from '../lib/profiles.svelte.ts';
   import { rotateBlob } from '../lib/rotate.ts';
@@ -21,6 +21,7 @@
   import TopBar from '../components/TopBar.svelte';
   import Toast from '../components/Toast.svelte';
   import Saving from '../components/Saving.svelte';
+  import VideoBar from '../components/VideoBar.svelte';
 
   let { folderId, fileId }: { folderId: string; fileId: string } = $props();
 
@@ -41,6 +42,7 @@
   let commentBox = $state<HTMLTextAreaElement | null>(null);
   let stageEl = $state<HTMLElement | null>(null);
   let videoEl = $state<HTMLVideoElement | null>(null);
+  let vbar = $state<VideoBar | null>(null);
   let recents = $state<{ id: string; name: string }[]>(JSON.parse(localStorage.getItem('ds.v.recent') ?? '[]'));
 
   $effect(() => { void mydrive.start(); });
@@ -53,10 +55,18 @@
   let videoGo = $state(false);
   // (Only the id: starring or renaming the video must not reload it.)
   const videoId = $derived(cur && isVideo(cur) ? cur.id : '');
+  // Its first and last bytes are fetched during that second (media-sw.js).
+  const curId = $derived(cur?.id ?? '');
+  $effect(() => {
+    if (!curId) return;
+    const c = untrack(() => cur);
+    if (c && isVideo(c)) warmVideo(c);
+  });
   $effect(() => {
     const id = videoId;
     videoGo = false;
     if (!id) return;
+    if (vids.has(id)) { videoGo = true; return; } // seen just now: carry on at once
     const t = setTimeout(() => (videoGo = true), 1000);
     return () => clearTimeout(t);
   });
@@ -98,17 +108,31 @@
 
   async function load() {
     if (!drive || !folderId) return;
-    all = null;
     loadError = '';
+    // Seen lately (this page): draw at once from memory, then settle with the full answer.
+    const quick = !deep && !VIRTUAL[folderId] ? peek(folderId, { orderBy: 'name_natural' }) : undefined;
+    const known = folderMeta.get(folderId);
+    let drawn = false;
+    if (quick && known) {
+      folder = known;
+      const files = quick.filter((f) => !isFolder(f));
+      all = tv.on ? sortTv(files) : files;
+      if (fileId && !files.some((f) => f.id === fileId && (!onlyMedia || isMedia(f))) && files.some((f) => f.id === fileId)) onlyMedia = false;
+      index = Math.max(0, list?.findIndex((f) => f.id === fileId) ?? 0);
+      drawn = true;
+    } else all = null;
     try {
-      folder = VIRTUAL[folderId] ? { id: folderId, name: VIRTUAL[folderId]!, mimeType: 'virtual' } : await drive.get(folderId);
+      folder = VIRTUAL[folderId] ? { id: folderId, name: VIRTUAL[folderId]!, mimeType: 'virtual' } : (known ?? (await drive.get(folderId)));
+      if (!VIRTUAL[folderId]) folderMeta.set(folderId, folder);
       // On the TV the viewer steps through files in the same order as the TV grid.
       const files = tv.on && !deep ? sortTv(await collect(folderId)) : await collect(folderId);
+      // Already showing (from memory): keep the file on screen, wherever it is in the fresh list.
+      const keep = drawn ? (cur?.id ?? fileId) : fileId;
       all = files;
-      const wanted = fileId ? (onlyMedia && files.some(isMedia) ? files.filter(isMedia) : files).findIndex((f) => f.id === fileId) : -1;
-      if (fileId && wanted < 0 && onlyMedia) { onlyMedia = false; }
+      const wanted = keep ? (onlyMedia && files.some(isMedia) ? files.filter(isMedia) : files).findIndex((f) => f.id === keep) : -1;
+      if (keep && wanted < 0 && onlyMedia) { onlyMedia = false; }
       await tick();
-      index = Math.max(0, list?.findIndex((f) => f.id === fileId) ?? 0);
+      index = Math.max(0, list?.findIndex((f) => f.id === keep) ?? 0);
       if (folder && !VIRTUAL[folderId]) {
         recents = [{ id: folder.id, name: folder.id === mydrive.rootId ? 'My Drive' : folder.name }, ...recents.filter((r) => r.id !== folder!.id)].slice(0, 8);
         localStorage.setItem('ds.v.recent', JSON.stringify(recents));
@@ -189,14 +213,67 @@
       }, () => {});
     }
     // Warm the next two pictures (and the next original, which the media worker then keeps).
-    for (const n of [index + 1, index + 2, index - 1]) {
+    for (const n of [index, index + 1, index - 1, index + 2, index - 2, index + 3]) {
       const f = list?.[n];
-      const src = f && thumb(f, px(f));
-      if (src) new Image().src = src;
+      const src = f && (isImage(f) || isVideo(f)) ? thumb(f, px(f)) : undefined;
+      if (src) warmPic(src);
     }
     const nx = list?.[index + 1];
     if (!tv.on && nx && navigator.serviceWorker?.controller && isImage(nx) && SHOWABLE.test(nx.mimeType) && bytesOf(nx) <= 25 * 1024 * 1024) new Image().src = originalUrl(nx);
   });
+
+  // Pictures around the one on screen, loaded and decoded ahead and kept (the last 16), so stepping
+  // back and forth swaps instantly instead of loading again.
+  const pics = new Map<string, HTMLImageElement>();
+  let ready = $state<Record<string, true>>({});
+  function warmPic(src: string) {
+    const had = pics.get(src);
+    if (had) { pics.delete(src); pics.set(src, had); return; }
+    const im = new Image();
+    im.referrerPolicy = 'no-referrer';
+    im.src = src;
+    pics.set(src, im);
+    im.decode().then(() => { if (pics.has(src)) ready = { ...ready, [src]: true }; }, () => {});
+    while (pics.size > 16) {
+      const k = pics.keys().next().value!;
+      pics.delete(k);
+      if (ready[k]) { const { [k]: _, ...rest } = ready; ready = rest; }
+    }
+  }
+
+  // Videos: the last three players stay alive (paused, with what they loaded), so going back to a
+  // video carries on at once from where it was.
+  const vids = new Map<string, HTMLVideoElement>();
+  /** Videos this browser cannot play (MPEG-2 .mpg, camcorder .m2t, old .avi…). */
+  let cannot = $state<Record<string, true>>({});
+  function videoFor(f: DFile): HTMLVideoElement {
+    const had = vids.get(f.id);
+    if (had) { vids.delete(f.id); vids.set(f.id, had); return had; }
+    const v = document.createElement('video');
+    v.src = mydrive.drive!.streamUrl(f);
+    const poster = thumb(f, px(f));
+    if (poster) v.poster = poster;
+    v.playsInline = true;
+    v.preload = 'auto';
+    v.addEventListener('click', (e) => { e.stopPropagation(); vbar?.toggle(); });
+    v.addEventListener('error', () => { if (v.error?.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED || v.error?.code === MediaError.MEDIA_ERR_DECODE) cannot = { ...cannot, [f.id]: true }; });
+    vids.set(f.id, v);
+    while (vids.size > 3) {
+      const [k, old] = vids.entries().next().value!;
+      vids.delete(k);
+      old.pause();
+      old.removeAttribute('src');
+      old.load();
+    }
+    return v;
+  }
+  function hostVideo(node: HTMLElement, f: DFile) {
+    const v = videoFor(f);
+    node.appendChild(v);
+    videoEl = v;
+    void v.play().catch(() => {});
+    return { destroy() { v.pause(); v.remove(); if (videoEl === v) videoEl = null; } };
+  }
 
   /** Thumbnail size: the screen's long edge, never bigger than the picture itself (no blurry upscaling). */
   const px = (f?: DFile) => {
@@ -331,6 +408,7 @@
       // The picture now shows those t turns itself; keep any turns made while it was saving.
       turns = { ...turns, [f.id]: (((turns[f.id] ?? 0) - t) % 4 + 4) % 4 };
       if (all) all = all.map((x) => (x.id === f.id ? { ...x, ...saved, size: String(out!.size) } : x));
+      noteUpdate({ ...f, ...saved }, { ...saved, size: String(out!.size) });
     }, () => {
       turns = { ...turns, [f.id]: (((turns[f.id] ?? 0) - t) % 4 + 4) % 4 };
     }).then((ok) => {
@@ -412,6 +490,13 @@
     if (panel && a?.closest('.panel')) return e.key.startsWith('Arrow');
     const inBar = !!(a && topEl?.contains(a));
     const stop = () => { e.preventDefault(); e.stopPropagation(); return true; };
+    // The video's time bar: ← → jump back/forward, OK plays/pauses, ↑ ↓ or Back leave it.
+    if (a?.closest('.vbar')) {
+      wake();
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { vbar?.seek(e.key === 'ArrowLeft' ? -1 : 1); return stop(); }
+      if (e.key === 'Enter') { vbar?.toggle(); return stop(); }
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown' || isBack(e)) { a.blur(); return stop(); }
+    }
     if (inBar) {
       const bs = toolbar();
       const i = bs.indexOf(a!);
@@ -438,7 +523,11 @@
         (last ?? bs.find((b) => b.closest('.acts')) ?? bs[0])?.focus();
         return stop();
       }
-      case 'ArrowDown': if (zoom > 1) pan(0, 1); else { chrome = !chrome; if (chrome) wake(); } return stop();
+      case 'ArrowDown':
+        if (zoom > 1) pan(0, 1);
+        else if (videoEl && vbar) { wake(); vbar.focus(); } // ↓ on a video: its time bar, to seek
+        else { chrome = !chrome; if (chrome) wake(); }
+        return stop();
       case 'Enter':
         if (videoId && !videoGo) { videoGo = true; wake(); }
         else if (videoEl) { videoEl.paused ? void videoEl.play() : videoEl.pause(); wake(); }
@@ -461,7 +550,11 @@
     const a = document.activeElement as HTMLElement | null;
     if ((e.key === 'Enter' || e.key === ' ') && a && a !== document.body && a.matches('button, a, [role="button"], input, select, summary')) return;
     let handled = true;
+    if (a?.closest('.vbar')) return; // the time bar has its own keys (← → seek)
+    if (videoEl && vbar && (e.shiftKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight'))) { vbar.seek(e.key === 'ArrowLeft' ? -1 : 1); e.preventDefault(); return; }
     switch (e.key) {
+      case 'j': case 'J': case 'MediaRewind': if (vbar && videoEl) vbar.seek(-1); else handled = false; break;
+      case 'l': case 'L': case 'MediaFastForward': if (vbar && videoEl) vbar.seek(1); else handled = false; break;
       case 'ArrowRight': if (zoom > 1) pan(1, 0); else go(index + 1); break;
       case 'ArrowLeft': if (zoom > 1) pan(-1, 0); else go(index - 1); break;
       case 'PageDown': case 'MediaTrackNext': go(index + 1); break;
@@ -493,7 +586,7 @@
       default:
         if (isBack(e)) back(); else handled = false;
     }
-    if (handled) e.preventDefault();
+    if (handled) { e.preventDefault(); e.stopPropagation(); }
   }
 
   async function toggleFull() {
@@ -515,6 +608,18 @@
     return () => removeEventListener('keydown', key, true);
   });
   onDestroy(() => {
+    for (const v of vids.values()) { v.pause(); v.removeAttribute('src'); v.load(); }
+    vids.clear();
+    // Back in the folder, the file you left on is the one in focus (TV grid) / selected (My Drive).
+    const c = cur;
+    if (c && folderId && folderId !== 'recent') {
+      const place = folderId === mydrive.rootId ? 'root' : folderId;
+      sessionStorage.setItem(`ds.tvfocus.${place}`, c.id);
+      sessionStorage.setItem(`ds.sel.${folderId}`, c.id);
+      // Seen with subfolders: also its own folder, for when you go there.
+      const p = c.parents?.[0];
+      if (p && p !== folderId) { sessionStorage.setItem(`ds.tvfocus.${p === mydrive.rootId ? 'root' : p}`, c.id); sessionStorage.setItem(`ds.sel.${p}`, c.id); }
+    }
     // Leaving with turns not yet saved: save them now (they run in the background).
     for (const [id, t] of rotTimers) { clearTimeout(t); rotTimers.delete(id); const f = rotFiles.get(id); if (f) queueRotation(f); }
     if (idle) clearTimeout(idle); for (const u of Object.values(full)) if (u.startsWith('blob:')) URL.revokeObjectURL(u); });
@@ -609,15 +714,22 @@
         {#key cur.id}
           {#if isVideo(cur)}
             <!-- svelte-ignore a11y_media_has_caption -->
-            {#if videoGo}
-              <video bind:this={videoEl} src={mydrive.drive.streamUrl(cur)} poster={thumb(cur, px(cur))} controls autoplay playsinline onclick={(e) => e.stopPropagation()}></video>
+            {#if cannot[cur.id]}
+              <div class="msg">
+                {#if thumb(cur, px(cur))}<img class="pic small-pic" src={thumb(cur, px(cur))} alt="" referrerpolicy="no-referrer" />{/if}
+                <p>This video's format ({cur.name.split('.').pop()?.toUpperCase()}) cannot play in a browser or on the TV.</p>
+                <a class="btn" href={driveLink(cur)} target="_blank" rel="noopener" onclick={(e) => e.stopPropagation()}>Open in Google Drive</a>
+              </div>
+            {:else if videoGo}
+              <div class="vhost" use:hostVideo={cur}></div>
+              {#if videoEl}<VideoBar bind:this={vbar} video={videoEl} show={chrome} onwake={wake} />{/if}
             {:else}
               <!-- Passing by: only the picture; the video loads once you stay a second (or press OK). -->
-              {#if thumb(cur, px(cur))}<img class="pic" src={thumb(cur, px(cur))} alt={cur.name} referrerpolicy="no-referrer" decoding="async" draggable="false" />{/if}
+              {#if thumb(cur, px(cur))}<img class="pic" class:ready={ready[thumb(cur, px(cur))!]} src={thumb(cur, px(cur))} alt={cur.name} referrerpolicy="no-referrer" decoding="async" draggable="false" />{/if}
               <button class="vwait" aria-label="Play" onclick={(e) => { e.stopPropagation(); videoGo = true; }}><svg viewBox="0 0 24 24" width="1em" height="1em"><path d="M8 5v14l11-7z" fill="currentColor" /></svg></button>
             {/if}
           {:else if isImage(cur)}
-            <img class="pic" class:zoomed={zoom > 1} src={full[cur.id] ?? thumb(cur, px(cur))} alt={cur.name} referrerpolicy="no-referrer" decoding="async" draggable="false" style={picStyle(cur)} />
+            <img class="pic" class:zoomed={zoom > 1} class:ready={ready[full[cur.id] ?? thumb(cur, px(cur)) ?? '']} src={full[cur.id] ?? thumb(cur, px(cur))} alt={cur.name} referrerpolicy="no-referrer" decoding="async" draggable="false" style={picStyle(cur)} />
           {:else if isAudio(cur)}
             <div class="msg"><FileIcon file={cur} size={6} /><audio src={mydrive.drive.streamUrl(cur)} controls autoplay onclick={(e) => e.stopPropagation()}></audio></div>
           {:else if isPdf(cur) && full[cur.id]}
@@ -735,7 +847,9 @@
   .vwait { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 4.5rem; height: 4.5rem; border-radius: 50%; display: grid; place-items: center; font-size: 2rem; color: #fff; background: rgb(0 0 0 / 0.45); border: 2px solid rgb(255 255 255 / 0.7); }
   .vwait::after { content: ''; position: absolute; inset: -6px; border-radius: 50%; border: 3px solid transparent; border-top-color: #fff; animation: vwait 1s linear forwards; }
   @keyframes vwait { from { transform: rotate(0); } to { transform: rotate(360deg); } }
-  .pic, video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; animation: fade 0.18s ease-out; }
+  .pic, .vhost :global(video) { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; animation: fade 0.18s ease-out; }
+  .pic.ready { animation: none; }
+  .vhost { position: absolute; inset: 0; }
   .small-pic { position: static; width: auto; height: auto; max-width: 100%; max-height: 50vh; border-radius: 12px; }
   @keyframes fade { from { opacity: 0.2; } }
   .doc { width: min(1100px, 100%); height: 100%; border: 0; background: #fff; }

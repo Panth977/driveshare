@@ -3,6 +3,7 @@
 // so a 5 TB Drive costs the functions one call an hour.
 import { FOLDER_MIME } from '@driveshare/backend/shared';
 import { auth, driveAccess, errorText } from './icebase.ts';
+import { noteUpdate } from './listcache.ts';
 
 export { FOLDER_MIME };
 
@@ -236,7 +237,7 @@ export class RestDrive implements DriveApi {
   }
 
   update(id: string, patch: { name?: string; trashed?: boolean; starred?: boolean }) {
-    return this.call<DFile>('PATCH', `${API}/files/${encodeURIComponent(id)}?fields=${FIELDS}`, patch);
+    return this.call<DFile>('PATCH', `${API}/files/${encodeURIComponent(id)}?fields=${FIELDS}`, patch).then((f) => { noteUpdate(f, patch); return f; });
   }
 
   async comments(id: string) {
@@ -321,8 +322,13 @@ export class RestDrive implements DriveApi {
   }
 
   streamUrl(f: DFile): string {
-    return `/__media/${encodeURIComponent(f.id)}?size=${bytesOf(f)}`;
+    return `/__media/${encodeURIComponent(f.id)}?size=${bytesOf(f)}&type=${encodeURIComponent(f.mimeType)}`;
   }
+}
+
+/** Ask the media worker to fetch a video's first and last bytes now, so it starts quickly. */
+export function warmVideo(f: DFile): void {
+  navigator.serviceWorker?.controller?.postMessage({ type: 'warm', id: f.id, size: bytesOf(f) });
 }
 
 // ─── the media service worker: lets <video> stream Drive files with our token ─────────────
