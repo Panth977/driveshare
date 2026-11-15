@@ -7,6 +7,7 @@
   import { sizes } from '../lib/sizes.svelte.ts';
   import { nav } from '../lib/router.svelte.ts';
   import { toast } from '../lib/toast.svelte.ts';
+  import { activity } from '../lib/activity.svelte.ts';
   import { editable, isBack, tv } from '../lib/tv.svelte.ts';
   import { ago, bytesOf, driveLink, duration, failText, isAudio, isFolder, isImage, isMedia, isPdf, isVideo, kindOf, originalUrl, sortTv, thumb, type DComment, type DFile } from '../lib/gdrive.ts';
   import { children as cacheChildren } from '../lib/listcache.ts';
@@ -18,6 +19,7 @@
   import ShareDialog from '../components/drive/ShareDialog.svelte';
   import TopBar from '../components/TopBar.svelte';
   import Toast from '../components/Toast.svelte';
+  import Saving from '../components/Saving.svelte';
 
   let { folderId, fileId }: { folderId: string; fileId: string } = $props();
 
@@ -34,7 +36,6 @@
   let sharing = $state<DFile | null>(null);
   let comments = $state<DComment[] | null>(null);
   let draft = $state('');
-  let posting = $state(false);
   let full = $state<Record<string, string>>({});
   let commentBox = $state<HTMLTextAreaElement | null>(null);
   let stageEl = $state<HTMLElement | null>(null);
@@ -200,49 +201,63 @@
 
   const say = (t: string) => toast.show(t);
 
+  // Bin, star and comment change the screen at once and save in the background (lib/activity), so
+  // the buttons never wait: go to the next photo, bin it too, rotate another while those save.
   async function binCurrent() {
     const f = cur;
     if (!f || !drive || !all) return;
     if (!(await profiles.allow('bin', say))) return;
-    try {
-      await drive.update(f.id, { trashed: true });
-      sizes.local({ id: f.id, removed: true });
-      const at = index;
-      all = all.filter((x) => x.id !== f.id);
-      if (index >= (list?.length ?? 0)) index = Math.max(0, (list?.length ?? 1) - 1);
-      // On a TV, Undo gets the focus: OK undoes, the arrows just carry on.
-      if (tv.on) setTimeout(() => document.querySelector<HTMLElement>('.toast button.primary')?.focus(), 50);
-      toast.show(tv.on ? `Binned ${f.name} · OK to undo` : `Binned ${f.name}`, { label: 'Undo', run: async () => {
-        const back = await drive.update(f.id, { trashed: false });
-        sizes.local(back);
-        const pos = Math.min(at, all!.length);
-        all = [...all!.slice(0, pos), { ...f }, ...all!.slice(pos)];
-        index = list?.findIndex((x) => x.id === f.id) ?? index;
-      } });
-    } catch (e) { toast.show(failText(e)); }
+    const at = all.findIndex((x) => x.id === f.id);
+    const putBack = () => {
+      if (!all || all.some((x) => x.id === f.id)) return;
+      const pos = Math.min(Math.max(at, 0), all.length);
+      all = [...all.slice(0, pos), { ...f }, ...all.slice(pos)];
+    };
+    all = all.filter((x) => x.id !== f.id);
+    if (index >= (list?.length ?? 0)) index = Math.max(0, (list?.length ?? 1) - 1);
+    const saved = activity.run(`Bin ${f.name}`, async () => { await drive!.update(f.id, { trashed: true }); sizes.local({ id: f.id, removed: true }); }, putBack);
+    // On a TV, Undo gets the focus: OK undoes, the arrows just carry on.
+    if (tv.on) setTimeout(() => document.querySelector<HTMLElement>('.toast button.primary')?.focus(), 50);
+    toast.show(tv.on ? `Binned ${f.name} · OK to undo` : `Binned ${f.name}`, { label: 'Undo', run: () => {
+      putBack();
+      index = list?.findIndex((x) => x.id === f.id) ?? index;
+      void activity.run(`Undo bin ${f.name}`, async () => {
+        if (!(await saved)) return; // the bin never happened
+        sizes.local(await drive!.update(f.id, { trashed: false }));
+      }, () => { all = all?.filter((x) => x.id !== f.id) ?? null; });
+    } });
   }
 
-  async function star() {
+  function star() {
     const f = cur;
     if (!f || !drive) return;
-    if (!(await profiles.allow('edit', say))) return;
-    const r = await drive.update(f.id, { starred: !f.starred }).catch((e) => { toast.show(failText(e)); return null; });
-    if (r && all) all = all.map((x) => (x.id === f.id ? { ...x, starred: r.starred } : x));
-    if (r) toast.show(r.starred ? 'Starred' : 'Star removed', undefined, 1500);
+    void profiles.allow('edit', say).then((ok) => {
+      if (!ok || !all) return;
+      const to = !(all.find((x) => x.id === f.id)?.starred ?? f.starred);
+      const set = (v: boolean) => { if (all) all = all.map((x) => (x.id === f.id ? { ...x, starred: v } : x)); };
+      set(to);
+      toast.show(to ? 'Starred' : 'Star removed', undefined, 1500);
+      void activity.run(to ? 'Star' : 'Remove star', () => drive!.update(f.id, { starred: to }), () => set(!to));
+    });
   }
 
   async function post(e?: SubmitEvent) {
     e?.preventDefault();
     const f = cur;
-    if (!f || !drive || !draft.trim()) return;
+    const text = draft.trim();
+    if (!f || !drive || !text) return;
     if (!(await profiles.allow('comment', say))) return;
-    posting = true;
-    try {
-      const c = await drive.addComment(f.id, draft.trim());
-      comments = [...(comments ?? []), c];
-      draft = '';
-    } catch (err) { toast.show(failText(err)); }
-    posting = false;
+    // Shown at once (as "sending"), swapped for Drive's copy when it lands.
+    const temp = { id: `tmp-${crypto.randomUUID()}`, content: text, createdTime: new Date().toISOString(), author: { displayName: 'You', me: true } } satisfies DComment;
+    const forFile = f.id;
+    comments = [...(comments ?? []), temp];
+    draft = '';
+    void activity.run('Comment', async () => {
+      const c = await drive!.addComment(forFile, text);
+      if (cur?.id === forFile) comments = (comments ?? []).map((x) => (x.id === temp.id ? c : x));
+    }, () => {
+      if (cur?.id === forFile) { comments = (comments ?? []).filter((x) => x.id !== temp.id); if (!draft) draft = text; }
+    });
   }
 
   async function share() {
@@ -251,41 +266,56 @@
 
   // ── rotate: ↻ turns the picture 90° (shown at once); a moment after the last turn it is saved to
   // Drive as a new version of the same file (JPEG: lossless, only the orientation tag changes).
+  // Never blocks: keep turning (this picture or the next) while saves run; each picture saves in
+  // order, different pictures in parallel.
   let turns = $state<Record<string, number>>({});
-  let rotTimer: ReturnType<typeof setTimeout> | null = null;
-  let rotating = $state(false);
+  const rotTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const rotFiles = new Map<string, DFile>();
+  const rotChain = new Map<string, Promise<unknown>>();
+  /** The picture as last saved here, so the next save does not download it again. */
+  const lastSaved = new Map<string, Blob>();
   const ROTATABLE = /^image\/(jpeg|jpg|png|webp)$/;
   async function rotate() {
     const f = cur;
-    if (!f || !drive || !isImage(f) || rotating) return;
+    if (!f || !drive || !isImage(f)) return;
     if (!ROTATABLE.test(f.mimeType)) { say('Only JPEG, PNG and WebP pictures can be rotated here.'); return; }
-    if (!turns[f.id] && !(await profiles.allow('edit', say))) return;
+    if (!turns[f.id] && !rotChain.has(f.id) && !(await profiles.allow('edit', say))) return;
     turns = { ...turns, [f.id]: ((turns[f.id] ?? 0) + 1) % 4 };
-    if (rotTimer) clearTimeout(rotTimer);
-    rotTimer = setTimeout(() => void saveRotation(f), 1300);
+    clearTimeout(rotTimers.get(f.id));
+    rotFiles.set(f.id, f);
+    rotTimers.set(f.id, setTimeout(() => { rotTimers.delete(f.id); queueRotation(f); }, 1300));
   }
-  async function saveRotation(f: DFile) {
+  function queueRotation(f: DFile) {
+    const prev = rotChain.get(f.id) ?? Promise.resolve();
+    const next = prev.then(() => saveRotation(f));
+    rotChain.set(f.id, next);
+    void next.finally(() => { if (rotChain.get(f.id) === next) rotChain.delete(f.id); });
+  }
+  function saveRotation(f: DFile): Promise<unknown> {
     const t = turns[f.id] ?? 0;
-    if (!t || !drive) return;
-    rotating = true;
-    toast.show(`Saving the rotated picture…`, undefined, 10000);
-    try {
-      const out = await rotateBlob(await drive.download(f), f.mimeType, t);
+    if (!t || !drive) return Promise.resolve();
+    let out: Blob | null = null;
+    return activity.run(`Rotate ${f.name}`, async () => {
+      const src = lastSaved.get(f.id) ?? (await drive!.download(f));
+      out = await rotateBlob(src, f.mimeType, t);
       const meta = { name: f.name, parents: f.parents ?? [], mimeType: f.mimeType };
       let saved: Partial<DFile> = {};
-      if (out.size <= 5 * 1024 * 1024) saved = await drive.uploadSmall(meta, out, f.id);
-      else { const url = await drive.startUpload(meta, out.size, f.id); await sendFile(url, out, () => {}); saved = await drive.get(f.id); }
+      if (out.size <= 5 * 1024 * 1024) saved = await drive!.uploadSmall(meta, out, f.id);
+      else { const url = await drive!.startUpload(meta, out.size, f.id); await sendFile(url, out, () => {}); saved = await drive!.get(f.id); }
+      lastSaved.set(f.id, out);
       const old = full[f.id];
       if (old?.startsWith('blob:')) URL.revokeObjectURL(old);
       full = { ...full, [f.id]: URL.createObjectURL(out) };
-      turns = { ...turns, [f.id]: 0 };
-      if (all) all = all.map((x) => (x.id === f.id ? { ...x, ...saved, size: String(out.size) } : x));
-      toast.show('Rotated, saved in Drive', undefined, 2500);
-    } catch (e) {
-      turns = { ...turns, [f.id]: 0 };
-      toast.show(`Not rotated: ${failText(e)}`);
-    }
-    rotating = false;
+      // The picture now shows those t turns itself; keep any turns made while it was saving.
+      turns = { ...turns, [f.id]: (((turns[f.id] ?? 0) - t) % 4 + 4) % 4 };
+      if (all) all = all.map((x) => (x.id === f.id ? { ...x, ...saved, size: String(out!.size) } : x));
+    }, () => {
+      turns = { ...turns, [f.id]: (((turns[f.id] ?? 0) - t) % 4 + 4) % 4 };
+    }).then((ok) => {
+      if (ok) toast.show(`Rotated ${f.name}, saved in Drive`, undefined, 2000);
+      // More turns made while this one saved: save those too (unless a timer is still running).
+      if ((turns[f.id] ?? 0) && !rotTimers.has(f.id)) return saveRotation(f);
+    });
   }
 
   // ── zoom: + / − (or the toolbar), the mouse wheel, double-click; drag (or the arrows) to look
@@ -453,7 +483,10 @@
     addEventListener('keydown', key, true);
     return () => removeEventListener('keydown', key, true);
   });
-  onDestroy(() => { if (idle) clearTimeout(idle); for (const u of Object.values(full)) if (u.startsWith('blob:')) URL.revokeObjectURL(u); });
+  onDestroy(() => {
+    // Leaving with turns not yet saved: save them now (they run in the background).
+    for (const [id, t] of rotTimers) { clearTimeout(t); rotTimers.delete(id); const f = rotFiles.get(id); if (f) queueRotation(f); }
+    if (idle) clearTimeout(idle); for (const u of Object.values(full)) if (u.startsWith('blob:')) URL.revokeObjectURL(u); });
 
   // Swipe on phones and touch screens.
   let touchX = 0;
@@ -513,7 +546,7 @@
         {#if cur && isImage(cur)}
           <button class="ghost icon" title="Zoom out (−)" aria-label="Zoom out" disabled={zoom <= 1} onclick={() => zoomBy(1 / 1.5)}>−</button>
           <button class="ghost icon" title="Zoom in (+)" aria-label="Zoom in" onclick={() => zoomBy(1.5)}>+</button>
-          {#if profiles.can('edit')}<button class="ghost icon" title="Rotate (R), saved to Drive" aria-label="Rotate" disabled={rotating} onclick={rotate}>↻</button>{/if}
+          {#if profiles.can('edit')}<button class="ghost icon" title="Rotate (R), saved to Drive" aria-label="Rotate" onclick={rotate}>↻</button>{/if}
         {/if}
         {#if profiles.can('edit')}<button class="ghost icon" title="Star (*)" aria-label="Star" onclick={star}>{cur?.starred ? '★' : '☆'}</button>{/if}
         <button class="ghost" title="Comment (C)" onclick={openComments}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.4A8 8 0 1 1 21 12z"/></svg>Comment</button>
@@ -619,7 +652,7 @@
           </div>
           <form class="stack" style="gap:0.5rem" onsubmit={post}>
             <textarea bind:this={commentBox} bind:value={draft} rows="3" placeholder="Add a comment (saved on the file in Google Drive)"></textarea>
-            <div class="row spread"><span class="tiny faint"><span class="kbd">⌘ ↵</span> to post · <span class="kbd">Esc</span> back</span><button class="primary small" disabled={posting || !draft.trim()}>{posting ? 'Posting…' : 'Post'}</button></div>
+            <div class="row spread"><span class="tiny faint"><span class="kbd">⌘ ↵</span> to post · <span class="kbd">Esc</span> back</span><button class="primary small" disabled={!draft.trim()}>Post</button></div>
           </form>
         {/if}
       </aside>
@@ -636,6 +669,7 @@
 
 {#if sharing && drive}<ShareDialog {drive} file={sharing} onclose={() => (sharing = null)} />{/if}
 <Toast />
+<Saving />
 
 <style>
   .picks { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: 0.9rem; }

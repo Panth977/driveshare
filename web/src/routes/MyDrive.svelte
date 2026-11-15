@@ -20,6 +20,8 @@
   import ShareDialog from '../components/drive/ShareDialog.svelte';
   import UploadPanel from '../components/drive/UploadPanel.svelte';
   import Toast from '../components/Toast.svelte';
+  import Saving from '../components/Saving.svelte';
+  import { activity } from '../lib/activity.svelte.ts';
 
   let { folderId }: { folderId: string } = $props();
 
@@ -151,24 +153,32 @@
   }
   const preview = (folder: DFile | string) => nav(`/view/${typeof folder === 'string' ? folder : folder.id}`);
 
-  async function trash(f: DFile) {
-    try {
-      await drive!.update(f.id, { trashed: true });
-      items = items?.filter((x) => x.id !== f.id) ?? null;
-      for (const [k, l] of kids) kids.set(k, l.filter((x) => x.id !== f.id));
-      sizes.local({ id: f.id, removed: true });
-      toast.show(`Moved “${f.name}” to the bin`, { label: 'Undo', run: () => void untrash(f) });
-    } catch (e) { toast.show(failText(e)); }
+  // Bin and star show at once and save in the background (lib/activity); nothing waits for Drive.
+  function trash(f: DFile) {
+    const at = items?.findIndex((x) => x.id === f.id) ?? -1;
+    const kidsAt = [...kids].map(([k, l]) => [k, l.findIndex((x) => x.id === f.id)] as const).filter(([, i]) => i >= 0);
+    const ins = (l: DFile[], i: number) => (l.some((x) => x.id === f.id) ? l : [...l.slice(0, i), f, ...l.slice(i)]);
+    items = items?.filter((x) => x.id !== f.id) ?? null;
+    for (const [k, l] of kids) kids.set(k, l.filter((x) => x.id !== f.id));
+    const saved = activity.run(`Bin ${f.name}`, async () => { await drive!.update(f.id, { trashed: true }); sizes.local({ id: f.id, removed: true }); }, () => {
+      if (items && at >= 0) items = ins(items, at);
+      for (const [k, i] of kidsAt) { const l = kids.get(k); if (l) kids.set(k, ins(l, i)); }
+    });
+    toast.show(`Moved “${f.name}” to the bin`, { label: 'Undo', run: () => void untrash(f, saved) });
   }
-  async function untrash(f: DFile) {
-    const back = await drive!.update(f.id, { trashed: false });
-    sizes.local(back);
-    await refresh(true);
-    selected = f.id;
+  async function untrash(f: DFile, saved: Promise<boolean>) {
+    if (!(await saved)) return;
+    await activity.run(`Undo bin ${f.name}`, async () => {
+      sizes.local(await drive!.update(f.id, { trashed: false }));
+      await refresh(true);
+      selected = f.id;
+    });
   }
-  async function star(f: DFile) {
-    const r = await drive!.update(f.id, { starred: !f.starred }).catch((e) => { toast.show(failText(e)); return null; });
-    if (r && items) items = items.map((x) => (x.id === f.id ? { ...x, starred: r.starred } : x));
+  function star(f: DFile) {
+    const to = !(items?.find((x) => x.id === f.id)?.starred ?? f.starred);
+    const set = (v: boolean) => { if (items) items = items.map((x) => (x.id === f.id ? { ...x, starred: v } : x)); };
+    set(to);
+    void activity.run(to ? 'Star' : 'Remove star', () => drive!.update(f.id, { starred: to }), () => set(!to));
   }
   function rename(f: DFile) {
     prompt = { title: 'Rename', label: 'Name', value: f.name, ok: 'Rename', run: async (name) => {
@@ -609,6 +619,7 @@
 {#if sharing && drive}<ShareDialog {drive} file={sharing} onclose={() => { sharing = null; focusSel(); }} />{/if}
 <UploadPanel />
 <Toast />
+<Saving />
 
 <style>
   .finder { display: grid; grid-template-columns: 15.5rem 1fr; height: calc(100vh - 3.6rem); }

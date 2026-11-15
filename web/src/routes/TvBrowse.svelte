@@ -21,6 +21,8 @@
   import ShareDialog from '../components/drive/ShareDialog.svelte';
   import Prompt from '../components/drive/Prompt.svelte';
   import Toast from '../components/Toast.svelte';
+  import Saving from '../components/Saving.svelte';
+  import { activity } from '../lib/activity.svelte.ts';
   import { profiles } from '../lib/profiles.svelte.ts';
 
   let { place }: { place: string } = $props();
@@ -120,21 +122,26 @@
     if (!held) open(f);
   }
 
+  // Star and bin show at once and save in the background (lib/activity); nothing waits for Drive.
   async function star(f: DFile) {
     if (!(await profiles.allow('edit', (t) => toast.show(t)))) return;
-    const r = await drive!.update(f.id, { starred: !f.starred }).catch((e) => { toast.show(failText(e)); return null; });
-    if (r && items) { items = items.map((x) => (x.id === f.id ? { ...x, starred: r.starred } : x)); toast.show(r.starred ? 'Starred' : 'Star removed', undefined, 1500); }
+    const to = !(items?.find((x) => x.id === f.id)?.starred ?? f.starred);
+    const set = (v: boolean) => { if (items) items = items.map((x) => (x.id === f.id ? { ...x, starred: v } : x)); };
+    set(to);
+    toast.show(to ? 'Starred' : 'Star removed', undefined, 1500);
+    void activity.run(to ? 'Star' : 'Remove star', () => drive!.update(f.id, { starred: to }), () => set(!to));
   }
   async function bin(f: DFile) {
-    try {
-      await drive!.update(f.id, { trashed: true });
-      sizes.local({ id: f.id, removed: true });
-      const at = items?.indexOf(f) ?? 0;
-      items = items?.filter((x) => x.id !== f.id) ?? null;
-      toast.show(`Moved “${f.name}” to the bin`, { label: 'Undo', run: async () => { await drive!.update(f.id, { trashed: false }); items = items ? [...items.slice(0, at), f, ...items.slice(at)] : items; } });
-      await tick();
-      gridEl?.querySelectorAll<HTMLElement>('[data-id]')[Math.min(at, (items?.length ?? 1) - 1)]?.focus();
-    } catch (e) { toast.show(failText(e)); }
+    const at = Math.max(0, items?.findIndex((x) => x.id === f.id) ?? 0);
+    const putBack = () => { if (items && !items.some((x) => x.id === f.id)) items = [...items.slice(0, at), f, ...items.slice(at)]; };
+    items = items?.filter((x) => x.id !== f.id) ?? null;
+    const saved = activity.run(`Bin ${f.name}`, async () => { await drive!.update(f.id, { trashed: true }); sizes.local({ id: f.id, removed: true }); }, putBack);
+    toast.show(`Moved “${f.name}” to the bin`, { label: 'Undo', run: () => {
+      putBack();
+      void activity.run(`Undo bin ${f.name}`, async () => { if (await saved) sizes.local(await drive!.update(f.id, { trashed: false })); }, () => { items = items?.filter((x) => x.id !== f.id) ?? null; });
+    } });
+    await tick();
+    gridEl?.querySelectorAll<HTMLElement>('[data-id]')[Math.min(at, (items?.length ?? 1) - 1)]?.focus();
   }
 
   function key(e: KeyboardEvent) {
@@ -270,6 +277,7 @@
     onok={() => { const f = confirmBin!; confirmBin = null; void bin(f); }} oncancel={() => { confirmBin = null; restoreFocus(); }} />
 {/if}
 <Toast />
+<Saving />
 
 <style>
   .tvroot { min-height: 100vh; padding: 0 2.4rem 3rem; background: radial-gradient(60rem 30rem at 0 0, rgb(124 156 255 / 0.12), transparent 60%), var(--bg); }
