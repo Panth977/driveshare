@@ -108,7 +108,9 @@
     // A held OK button repeats its key: the first repeat means "hold" (remotes repeat after ~0.4 s).
     if (e.repeat) { if (!held) { held = true; if (pressTimer) clearTimeout(pressTimer); menuFor = f; } return; }
     held = false;
-    pressTimer = setTimeout(() => { held = true; menuFor = f; }, 400);
+    // In the TV app the app itself reports a held OK (window.__dsHold); a timer here could mistake a
+    // slow web view for a hold. In a browser, a held key is the only way to know.
+    if (!inTvApp) pressTimer = setTimeout(() => { held = true; menuFor = f; }, 400);
   }
   function up(e: KeyboardEvent, f: DFile) {
     if (e.key !== 'Enter') return;

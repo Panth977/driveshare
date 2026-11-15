@@ -133,7 +133,8 @@
   $effect(() => {
     const c = cur;
     if (!c || !drive) return;
-    const original = isPdf(c) || (isImage(c) && (!c.thumbnailLink || (SHOWABLE.test(c.mimeType) && bytesOf(c) <= ORIGINAL_MAX)));
+    // On a TV a screen-sized picture is all it can show: originals only when there is no thumbnail.
+    const original = isPdf(c) || (isImage(c) && (!c.thumbnailLink || (!tv.on && SHOWABLE.test(c.mimeType) && bytesOf(c) <= ORIGINAL_MAX)));
     if (original && !full[c.id]) {
       drive.mediaUrl(c).then((u) => {
         // Keep the last few originals in memory; free the rest.
@@ -144,27 +145,36 @@
       }, () => {});
     }
     // Warm the next two pictures (and the next original, which the media worker then keeps).
-    for (const n of [index + 1, index + 2]) {
+    for (const n of [index + 1, index + 2, index - 1]) {
       const f = list?.[n];
       const src = f && thumb(f, px(f));
       if (src) new Image().src = src;
     }
     const nx = list?.[index + 1];
-    if (nx && navigator.serviceWorker?.controller && isImage(nx) && SHOWABLE.test(nx.mimeType) && bytesOf(nx) <= 25 * 1024 * 1024) new Image().src = originalUrl(nx);
+    if (!tv.on && nx && navigator.serviceWorker?.controller && isImage(nx) && SHOWABLE.test(nx.mimeType) && bytesOf(nx) <= 25 * 1024 * 1024) new Image().src = originalUrl(nx);
   });
 
   /** Thumbnail size: the screen's long edge, never bigger than the picture itself (no blurry upscaling). */
   const px = (f?: DFile) => {
-    const screen = Math.min(2560, Math.round(Math.max(innerWidth, innerHeight) * Math.min(2, devicePixelRatio || 1)));
+    const screen = Math.min(tv.on ? 1920 : 2560, Math.round(Math.max(innerWidth, innerHeight) * Math.min(2, devicePixelRatio || 1)));
     const m = f?.imageMediaMetadata ?? f?.videoMediaMetadata;
     const own = m?.width && m?.height ? Math.max(m.width, m.height) : 0;
     return own ? Math.min(screen, own) : screen;
   };
 
-  function go(i: number) {
+  function go(i: number, quiet = false) {
     if (!list?.length) return;
     index = Math.max(0, Math.min(list.length - 1, i));
-    wake();
+    if (quiet) flash(); else wake();
+  }
+
+  // TV: stepping keeps the picture full screen; a small caption floats over it for a moment.
+  let caption = $state(false);
+  let captionTimer: ReturnType<typeof setTimeout> | null = null;
+  function flash() {
+    caption = true;
+    if (captionTimer) clearTimeout(captionTimer);
+    captionTimer = setTimeout(() => (caption = false), 2200);
   }
 
   async function binCurrent() {
@@ -220,6 +230,55 @@
     else nav(folderId === mydrive.rootId ? '/drive' : `/drive/${folderId}`);
   }
 
+  /**
+   * The remote on a TV. On the picture: ← → step, ↑ opens the toolbar, ↓ shows or hides the bars,
+   * OK plays/pauses a video. In the toolbar: ← → move between its buttons, ↓ or Back goes back to
+   * the picture. Returns true when it handled the key.
+   */
+  let topEl = $state<HTMLElement | null>(null);
+  let topH = $state(0);
+  let stripH = $state(0);
+  const toolbar = () => [...(topEl?.querySelectorAll<HTMLElement>('button, a') ?? [])].filter((b) => b.offsetParent);
+  function toPicture() {
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    wake();
+  }
+  function tvKey(e: KeyboardEvent): boolean {
+    const a = document.activeElement as HTMLElement | null;
+    // Details/comments panel: its own focus moves (page-wide arrow navigation), nothing else here.
+    if (panel && a?.closest('.panel')) return e.key.startsWith('Arrow');
+    const inBar = !!(a && topEl?.contains(a));
+    const stop = () => { e.preventDefault(); e.stopPropagation(); return true; };
+    if (inBar) {
+      const bs = toolbar();
+      const i = bs.indexOf(a!);
+      wake();
+      if (e.key === 'ArrowRight') { bs[Math.min(bs.length - 1, i + 1)]?.focus(); return stop(); }
+      if (e.key === 'ArrowLeft') { bs[Math.max(0, i - 1)]?.focus(); return stop(); }
+      if (e.key === 'ArrowDown' || isBack(e)) { toPicture(); return stop(); }
+      if (e.key === 'ArrowUp') return stop();
+      return false; // OK clicks the focused button
+    }
+    if (a && a !== document.body && !a.closest('.panel')) a.blur(); // nothing on the picture keeps focus
+    switch (e.key) {
+      case 'ArrowRight': go(index + 1, !chrome); return stop();
+      case 'ArrowLeft': go(index - 1, !chrome); return stop();
+      case 'ArrowUp': {
+        wake();
+        // Start on the first action (not Back, so a stray OK does not leave the viewer).
+        const first = toolbar().find((b) => b.closest('.acts'));
+        (first ?? toolbar()[0])?.focus();
+        return stop();
+      }
+      case 'ArrowDown': chrome = !chrome; if (chrome) wake(); return stop();
+      case 'Enter':
+        if (videoEl) { videoEl.paused ? void videoEl.play() : videoEl.pause(); wake(); }
+        else { chrome = !chrome; if (chrome) wake(); }
+        return stop();
+    }
+    return false;
+  }
+
   function key(e: KeyboardEvent) {
     if (!folderId || sharing) return;
     if (editable(e.target)) {
@@ -228,9 +287,7 @@
       return;
     }
     if (e.metaKey || e.ctrlKey || e.altKey) { if (e.key === 'Backspace' && e.metaKey) { e.preventDefault(); void binCurrent(); } return; }
-    // On a TV, arrows inside the toolbar or panel move focus there; on the picture they step through files.
-    const inChrome = (e.target as HTMLElement)?.closest?.('[data-chrome]');
-    if (tv.on && inChrome && e.key.startsWith('Arrow')) { wake(); return; }
+    if (tv.on && tvKey(e)) return;
     let handled = true;
     switch (e.key) {
       case 'ArrowRight': case 'PageDown': case 'MediaTrackNext': go(index + 1); break;
@@ -249,9 +306,7 @@
         else go(index + 1);
         break;
       case 'ArrowUp': case 'ArrowDown':
-        // Show the toolbar and let spatial navigation move focus into it.
         wake();
-        if (tv.on) { handled = false; break; }
         if (videoEl && e.key === 'ArrowUp') videoEl.volume = Math.min(1, videoEl.volume + 0.1);
         else if (videoEl) videoEl.volume = Math.max(0, videoEl.volume - 0.1);
         break;
@@ -273,14 +328,20 @@
     if (idle) clearTimeout(idle);
     idle = setTimeout(() => { if (!panel && !sharing) chrome = false; }, tv.on ? 4500 : 3000);
   }
-  onMount(() => wake());
+  onMount(() => {
+    wake();
+    // Capture phase: the viewer reads the remote before the page-wide arrow-key navigation does.
+    addEventListener('keydown', key, true);
+    return () => removeEventListener('keydown', key, true);
+  });
   onDestroy(() => { if (idle) clearTimeout(idle); for (const u of Object.values(full)) if (u.startsWith('blob:')) URL.revokeObjectURL(u); });
 
   // Swipe on phones and touch screens.
   let touchX = 0;
   const strip = $derived.by(() => {
     if (!list) return [];
-    const from = Math.max(0, index - 30), to = Math.min(list.length, index + 31);
+    const span = tv.on ? 12 : 30;
+    const from = Math.max(0, index - span), to = Math.min(list.length, index + span + 1);
     return list.slice(from, to).map((f, k) => ({ f, i: from + k }));
   });
   $effect(() => {
@@ -289,7 +350,7 @@
   });
 </script>
 
-<svelte:window onkeydown={key} onmousemove={wake} />
+<svelte:window onmousemove={wake} />
 
 {#if !folderId}
   <TopBar tabs />
@@ -317,8 +378,8 @@
     {/if}
   </main>
 {:else}
-  <div class="viewer" class:hide={!chrome} class:withpanel={!!panel}>
-    <header class="top" data-chrome>
+  <div class="viewer" class:hide={!chrome} class:withpanel={!!panel} style:--top="{chrome ? topH : 0}px" style:--bottom="{chrome && list && list.length > 1 ? stripH : 0}px">
+    <header class="top" data-chrome bind:this={topEl} bind:clientHeight={topH}>
       <button class="ghost" onclick={back} aria-label="Back">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 18l-6-6 6-6"/></svg>{folder?.id === mydrive.rootId ? 'My Drive' : (folder?.name ?? '')}
       </button>
@@ -371,13 +432,13 @@
             </div>
           {/if}
         {/key}
-        {#if index > 0}<button class="nav l" data-chrome aria-label="Previous" onclick={(e) => { e.stopPropagation(); go(index - 1); }}>‹</button>{/if}
-        {#if index < list.length - 1}<button class="nav r" data-chrome aria-label="Next" onclick={(e) => { e.stopPropagation(); go(index + 1); }}>›</button>{/if}
+        {#if index > 0}<button class="nav l" data-chrome tabindex={tv.on ? -1 : 0} aria-label="Previous" onclick={(e) => { e.stopPropagation(); go(index - 1); }}>‹</button>{/if}
+        {#if index < list.length - 1}<button class="nav r" data-chrome tabindex={tv.on ? -1 : 0} aria-label="Next" onclick={(e) => { e.stopPropagation(); go(index + 1); }}>›</button>{/if}
       {/if}
     </div>
 
     {#if list && list.length > 1}
-      <div class="strip" data-chrome data-nav-skip>
+      <div class="strip" data-chrome data-nav-skip bind:clientHeight={stripH}>
         {#each strip as { f, i } (f.id)}
           <button class:on={i === index} tabindex="-1" onclick={() => go(i)} aria-label={f.name}>
             {#if thumb(f, 160)}<img src={thumb(f, 160)} alt="" loading="lazy" referrerpolicy="no-referrer" />{:else}<FileIcon file={f} size={1.6} />{/if}
@@ -434,6 +495,9 @@
       </aside>
     {/if}
 
+    {#if tv.on && caption && !chrome && cur && list}
+      <div class="caption num"><b>{index + 1}</b> / {list.length} · {cur.name}</div>
+    {/if}
     <div class="keys tiny faint" data-chrome>
       <span class="kbd">←</span><span class="kbd">→</span> move · <span class="kbd">Del</span> bin · <span class="kbd">C</span> comment · <span class="kbd">S</span> share · <span class="kbd">I</span> details · <span class="kbd">F</span> full screen · <span class="kbd">Esc</span> back
     </div>
@@ -452,16 +516,18 @@
   .pick.slim .tiny { grid-column: 2; }
   .pi { font-size: 1.4rem; color: var(--accent-2); }
 
-  .viewer { position: fixed; inset: 0; background: #050607; display: grid; grid-template-rows: auto 1fr auto; grid-template-columns: 1fr; z-index: 30; }
-  .viewer.withpanel { grid-template-columns: 1fr 22rem; }
-  .top { grid-column: 1 / -1; display: flex; align-items: center; gap: 0.8rem; padding: 0.6rem 0.9rem; background: linear-gradient(180deg, rgb(5 6 7 / 0.95), rgb(5 6 7 / 0.6)); border-bottom: 1px solid rgb(255 255 255 / 0.05); z-index: 3; transition: opacity 0.25s; }
+  /* The bars float over the picture. While they show, the picture sits between them (nothing is
+     covered); when they hide, it takes the whole screen. */
+  .viewer { --top: 0px; --bottom: 0px; --side: 0px; position: fixed; inset: 0; background: #050607; z-index: 30; overflow: hidden; }
+  .viewer.withpanel { --side: 22rem; }
+  .top { position: absolute; top: 0; left: 0; right: var(--side); display: flex; align-items: center; gap: 0.8rem; padding: 0.6rem 0.9rem; background: linear-gradient(180deg, rgb(5 6 7 / 0.95), rgb(5 6 7 / 0.6)); border-bottom: 1px solid rgb(255 255 255 / 0.05); z-index: 3; transition: opacity 0.25s; }
   .ttl { flex: 1; min-width: 0; text-align: center; }
   .nm { font-weight: 640; }
   .star { color: var(--warn); }
   .acts { display: flex; align-items: center; gap: 0.25rem; flex-wrap: wrap; justify-content: flex-end; }
   .live { color: var(--good); background: rgb(79 209 161 / 0.12); }
   .tog { display: inline-flex; flex-direction: row; align-items: center; gap: 0.35rem; color: var(--muted); font-weight: 500; padding: 0 0.4rem; white-space: nowrap; }
-  .stage { position: relative; display: grid; place-items: center; overflow: hidden; min-height: 0; }
+  .stage { position: absolute; top: var(--top); bottom: var(--bottom); left: 0; right: var(--side); display: grid; place-items: center; overflow: hidden; transition: top 0.25s ease, bottom 0.25s ease; }
   /* Absolutely placed: a percentage height does not resolve inside the grid stage, which made
      pictures fill the width and get cropped. Now the whole picture always fits. */
   .pic, video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; animation: fade 0.18s ease-out; }
@@ -473,13 +539,13 @@
   .nav:hover { background: rgb(0 0 0 / 0.6); }
   .nav.l { left: 1rem; }
   .nav.r { right: 1rem; }
-  .strip { grid-column: 1; display: flex; gap: 0.35rem; padding: 0.55rem 0.8rem 0.7rem; overflow-x: auto; background: linear-gradient(0deg, rgb(5 6 7 / 0.95), rgb(5 6 7 / 0.7)); transition: opacity 0.25s; scrollbar-width: none; }
+  .strip { position: absolute; bottom: 0; left: 0; right: var(--side); z-index: 3; display: flex; gap: 0.35rem; padding: 0.55rem 0.8rem 0.7rem; overflow-x: auto; background: linear-gradient(0deg, rgb(5 6 7 / 0.95), rgb(5 6 7 / 0.7)); transition: opacity 0.25s; scrollbar-width: none; }
   .strip button { position: relative; flex: none; width: 4.2rem; height: 3.1rem; padding: 0; border-radius: 8px; overflow: hidden; border: 2px solid transparent; background: var(--panel); opacity: 0.55; display: grid; place-items: center; }
   .strip button.on { border-color: var(--accent); opacity: 1; transform: scale(1.06); }
   .strip button:hover { opacity: 0.9; }
   .strip img { width: 100%; height: 100%; object-fit: cover; }
   .pl { position: absolute; font-size: 0.7rem; color: #fff; text-shadow: 0 1px 4px #000; }
-  .panel { grid-row: 2 / 4; grid-column: 2; background: var(--panel); border-left: 1px solid var(--line); padding: 1rem; display: flex; flex-direction: column; gap: 1rem; overflow: auto; }
+  .panel { position: absolute; top: 0; bottom: 0; right: 0; width: 22rem; z-index: 4; background: var(--panel); border-left: 1px solid var(--line); padding: 1rem; display: flex; flex-direction: column; gap: 1rem; overflow: auto; }
   .seg { display: flex; background: var(--bg-2); border-radius: 9px; padding: 0.15rem; border: 1px solid var(--line); }
   .seg button { border: 0; background: none; font-size: 0.8rem; padding: 0.35rem 0.7rem; color: var(--muted); border-radius: 7px; }
   .seg button.on { background: var(--raise); color: var(--ink); }
@@ -491,13 +557,14 @@
   .cm { padding: 0.65rem 0.75rem; border-radius: 10px; background: var(--panel-2); display: grid; gap: 0.25rem; }
   .keys { position: absolute; left: 50%; bottom: 4.6rem; transform: translateX(-50%); background: rgb(0 0 0 / 0.55); padding: 0.35rem 0.7rem; border-radius: 99px; white-space: nowrap; transition: opacity 0.25s; pointer-events: none; }
   .keys .kbd { margin: 0 0.1rem; }
+  .caption { position: absolute; left: 1.2rem; top: 1rem; z-index: 4; padding: 0.35rem 0.8rem; border-radius: 0.6rem; background: rgb(0 0 0 / 0.55); color: #fff; font-size: 0.8rem; pointer-events: none; animation: fade 0.2s ease-out; max-width: 60%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .hide .top, .hide .strip, .hide .nav, .hide .keys { opacity: 0; pointer-events: none; }
   .hide { cursor: none; }
   :global(html.tv) .acts .tog, :global(html.tv) .keys { display: none; }
   :global(html.tv) .strip button { width: 5.4rem; height: 3.4rem; }
   @media (max-width: 760px) {
-    .viewer.withpanel { grid-template-columns: 1fr; }
-    .panel { position: fixed; inset: auto 0 0 0; max-height: 60vh; grid-column: 1; border-radius: 16px 16px 0 0; z-index: 5; }
+    .viewer.withpanel { --side: 0px; }
+    .panel { position: fixed; inset: auto 0 0 0; width: auto; top: auto; max-height: 60vh; border-radius: 16px 16px 0 0; z-index: 5; }
     .acts .tog, .keys { display: none; }
     .acts button:not(.icon) { font-size: 0; gap: 0; }
   }
