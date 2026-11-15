@@ -375,8 +375,13 @@
   let topH = $state(0);
   let stripH = $state(0);
   const toolbar = () => [...(topEl?.querySelectorAll<HTMLElement>('button:not([disabled]), a') ?? [])].filter((b) => b.offsetParent);
+  // The toolbar button the remote was on last: ↑ comes back to it (Rotate, ↓, ↑ → Rotate again).
+  let lastBar = '';
+  const barKey = (b: HTMLElement) => b.getAttribute('aria-label') ?? b.getAttribute('title') ?? b.textContent?.trim() ?? '';
   function toPicture() {
-    (document.activeElement as HTMLElement | null)?.blur?.();
+    const a = document.activeElement as HTMLElement | null;
+    if (a && topEl?.contains(a)) lastBar = barKey(a);
+    a?.blur?.();
     wake();
   }
   function tvKey(e: KeyboardEvent): boolean {
@@ -404,9 +409,11 @@
       case 'ArrowUp': {
         if (zoom > 1) { pan(0, -1); return stop(); }
         wake();
-        // Start on the first action (not Back, so a stray OK does not leave the viewer).
-        const first = toolbar().find((b) => b.closest('.acts'));
-        (first ?? toolbar()[0])?.focus();
+        // Back on the button used last; else the first action (not Back, so a stray OK does not
+        // leave the viewer).
+        const bs = toolbar();
+        const last = lastBar ? bs.find((b) => barKey(b) === lastBar) : undefined;
+        (last ?? bs.find((b) => b.closest('.acts')) ?? bs[0])?.focus();
         return stop();
       }
       case 'ArrowDown': if (zoom > 1) pan(0, 1); else { chrome = !chrome; if (chrome) wake(); } return stop();
