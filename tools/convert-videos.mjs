@@ -82,7 +82,7 @@ async function candidates() {
   const out = [];
   let pageToken = '';
   do {
-    const r = await json('GET', `${API}/files?q=${encodeURIComponent(q)}&pageSize=1000&fields=nextPageToken,files(id,name,size,mimeType,parents,appProperties,videoMediaMetadata(width,height,durationMillis))${pageToken ? `&pageToken=${pageToken}` : ''}`);
+    const r = await json('GET', `${API}/files?q=${encodeURIComponent(q)}&pageSize=1000&fields=nextPageToken,files(id,name,size,mimeType,parents,modifiedTime,appProperties,videoMediaMetadata(width,height,durationMillis))${pageToken ? `&pageToken=${pageToken}` : ''}`);
     out.push(...r.files);
     pageToken = r.nextPageToken;
   } while (pageToken);
@@ -202,7 +202,8 @@ async function one(f, folder, fetched) {
   const t2 = Date.now();
   const name = `${f.name.replace(/\.[^.]+$/, '')}.mp4`;
   const up = await upload(dst, name, folder, f.id);
-  await api('PATCH', `${API}/files/${f.id}?fields=id`, JSON.stringify({ appProperties: { dsPlay: up.id, dsPlaySize: String(up.size ?? statSync(dst).size) } }));
+  // (modifiedTime given back as it was: a label must not make the original look edited today.)
+  await api('PATCH', `${API}/files/${f.id}?fields=id`, JSON.stringify({ appProperties: { dsPlay: up.id, dsPlaySize: String(up.size ?? statSync(dst).size) }, ...(f.modifiedTime ? { modifiedTime: f.modifiedTime } : {}) }));
   const mb = (statSync(dst).size / 1e6).toFixed(0);
   rmSync(src, { force: true });
   rmSync(dst, { force: true });
@@ -214,8 +215,16 @@ async function one(f, folder, fetched) {
 
 const args = process.argv.slice(2);
 try {
-  if (args[0] === '--one') {
-    const f = await json('GET', `${API}/files/${args[1]}?fields=id,name,size,mimeType,parents,appProperties,videoMediaMetadata(width,height,durationMillis)`);
+  if (args[0] === '--fix-dates') {
+    // Originals labelled before the line above: put their date back to their last content change.
+    for (const id of Object.keys(state.done)) {
+      const f = await json('GET', `${API}/files/${id}?fields=id,name,modifiedTime`);
+      const revs = await json('GET', `${API}/files/${id}/revisions?fields=revisions(modifiedTime)&pageSize=1000`).catch(() => null);
+      const last = revs?.revisions?.at(-1)?.modifiedTime;
+      if (last && last !== f.modifiedTime) { await api('PATCH', `${API}/files/${id}?fields=id`, JSON.stringify({ modifiedTime: last })); log(`date ${f.name}: ${f.modifiedTime} → ${last}`); }
+    }
+  } else if (args[0] === '--one') {
+    const f = await json('GET', `${API}/files/${args[1]}?fields=id,name,size,mimeType,parents,modifiedTime,appProperties,videoMediaMetadata(width,height,durationMillis)`);
     await one(f, await previewsFolder());
   } else {
     const list = await candidates();
