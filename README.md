@@ -36,6 +36,15 @@ step through (the button turns into *On TV*); in My Drive, right-click › *Show
 one small Firestore document under your account (`users/{uid}/remote/now`) and the TV app watches it:
 no function runs.
 
+**TV profiles.** For a TV several people use: Shares tab › *TV profiles*. Each profile says what it
+may do on the TV (comment, share links, edit = star/rotate, move to bin) and may have a 4-digit PIN;
+the TV asks *Who is watching?* and, for the actions you tick, the PIN (not again for an hour). Viewing
+is always allowed. It is a household lock kept in your account, not account security.
+
+**Rotate and zoom.** In the viewer, ↻ (or R) turns a picture; a moment later it is saved to Drive as a
+new version of the same file. JPEG is lossless (only the orientation tag changes); PNG/WebP are
+re-drawn. + / − (or the wheel, or double-click) zoom; drag or the arrows look around; 0 or Back resets.
+
 **Signing in on a TV**: the TV shows a QR code; scan it with a phone that is signed in, check the code,
 tap Approve. The TV gets its own session.
 

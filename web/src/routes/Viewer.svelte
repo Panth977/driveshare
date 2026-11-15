@@ -11,6 +11,9 @@
   import { ago, bytesOf, driveLink, duration, failText, isAudio, isFolder, isImage, isMedia, isPdf, isVideo, kindOf, originalUrl, sortTv, thumb, type DComment, type DFile } from '../lib/gdrive.ts';
   import { children as cacheChildren } from '../lib/listcache.ts';
   import { follow, sendToTv } from '../lib/remote.svelte.ts';
+  import { profiles } from '../lib/profiles.svelte.ts';
+  import { rotateBlob } from '../lib/rotate.ts';
+  import { sendFile } from '../lib/upload.ts';
   import FileIcon from '../components/drive/FileIcon.svelte';
   import ShareDialog from '../components/drive/ShareDialog.svelte';
   import TopBar from '../components/TopBar.svelte';
@@ -24,7 +27,8 @@
   let loadError = $state('');
   let index = $state(0);
   let onlyMedia = $state(localStorage.getItem('ds.v.media') !== '0');
-  let deep = $state(false);
+  // ?deep=1 (the TV's "with subfolders"): every file below the folder, folder by folder.
+  let deep = $state(new URLSearchParams(location.search).get('deep') === '1');
   let panel = $state<'' | 'info' | 'comments'>('');
   let chrome = $state(true);
   let sharing = $state<DFile | null>(null);
@@ -48,16 +52,33 @@
     if (id === 'recent') return d.query(`(mimeType contains 'image/' or mimeType contains 'video/') and trashed = false`, { orderBy: 'modifiedTime desc', max: 500 });
     if (id === 'starred') return (await d.query('starred = true and trashed = false')).filter((f) => !isFolder(f));
     if (!deep) return (await cacheChildren(d, id, (l) => { if (folderId === id && !deep) { const keep = cur?.id ?? fileId; const files = l.filter((f) => !isFolder(f)); all = tv.on ? sortTv(files) : files; const k = list?.findIndex((f) => f.id === keep) ?? -1; if (k >= 0) index = k; } }, { orderBy: 'name_natural' })).filter((f) => !isFolder(f));
-    // Subfolders too: breadth first, up to 5,000 files.
-    const out: DFile[] = [];
+    // Subfolders too: listed a level at a time (6 folders at once, cached listings), then put in
+    // folder order: a folder's own files by name, then each subfolder's, depth first. Up to 20,000.
+    const kidsOf = new Map<string, DFile[]>();
     let level = [id];
-    while (level.length && out.length < 5000) {
+    let count = 0;
+    while (level.length && count < 20000) {
       const next: string[] = [];
-      for (const fid of level) {
-        for (const f of await d.children(fid, { orderBy: 'name_natural' })) (isFolder(f) ? next.push(f.id) : out.push(f));
-      }
+      let k = 0;
+      await Promise.all(Array.from({ length: Math.min(6, level.length) }, async () => {
+        while (k < level.length) {
+          const fid = level[k++]!;
+          const l = await cacheChildren(d, fid, () => {}, { orderBy: 'name_natural' });
+          kidsOf.set(fid, sortTv(l));
+          for (const f of l) { if (isFolder(f)) next.push(f.id); else count++; }
+        }
+      }));
       level = next;
     }
+    const out: DFile[] = [];
+    const walk = (fid: string, seen: Set<string>) => {
+      if (seen.has(fid)) return;
+      seen.add(fid);
+      const l = kidsOf.get(fid) ?? [];
+      for (const f of l) if (!isFolder(f)) out.push(f);
+      for (const f of l) if (isFolder(f)) walk(f.id, seen);
+    };
+    walk(id, new Set());
     return out;
   }
 
@@ -68,7 +89,7 @@
     try {
       folder = VIRTUAL[folderId] ? { id: folderId, name: VIRTUAL[folderId]!, mimeType: 'virtual' } : await drive.get(folderId);
       // On the TV the viewer steps through files in the same order as the TV grid.
-      const files = tv.on ? sortTv(await collect(folderId)) : await collect(folderId);
+      const files = tv.on && !deep ? sortTv(await collect(folderId)) : await collect(folderId);
       all = files;
       const wanted = fileId ? (onlyMedia && files.some(isMedia) ? files.filter(isMedia) : files).findIndex((f) => f.id === fileId) : -1;
       if (fileId && wanted < 0 && onlyMedia) { onlyMedia = false; }
@@ -177,16 +198,21 @@
     captionTimer = setTimeout(() => (caption = false), 2200);
   }
 
+  const say = (t: string) => toast.show(t);
+
   async function binCurrent() {
     const f = cur;
     if (!f || !drive || !all) return;
+    if (!(await profiles.allow('bin', say))) return;
     try {
       await drive.update(f.id, { trashed: true });
       sizes.local({ id: f.id, removed: true });
       const at = index;
       all = all.filter((x) => x.id !== f.id);
       if (index >= (list?.length ?? 0)) index = Math.max(0, (list?.length ?? 1) - 1);
-      toast.show(`Binned ${f.name}`, { label: 'Undo', run: async () => {
+      // On a TV, Undo gets the focus: OK undoes, the arrows just carry on.
+      if (tv.on) setTimeout(() => document.querySelector<HTMLElement>('.toast button.primary')?.focus(), 50);
+      toast.show(tv.on ? `Binned ${f.name} · OK to undo` : `Binned ${f.name}`, { label: 'Undo', run: async () => {
         const back = await drive.update(f.id, { trashed: false });
         sizes.local(back);
         const pos = Math.min(at, all!.length);
@@ -199,6 +225,7 @@
   async function star() {
     const f = cur;
     if (!f || !drive) return;
+    if (!(await profiles.allow('edit', say))) return;
     const r = await drive.update(f.id, { starred: !f.starred }).catch((e) => { toast.show(failText(e)); return null; });
     if (r && all) all = all.map((x) => (x.id === f.id ? { ...x, starred: r.starred } : x));
     if (r) toast.show(r.starred ? 'Starred' : 'Star removed', undefined, 1500);
@@ -208,6 +235,7 @@
     e?.preventDefault();
     const f = cur;
     if (!f || !drive || !draft.trim()) return;
+    if (!(await profiles.allow('comment', say))) return;
     posting = true;
     try {
       const c = await drive.addComment(f.id, draft.trim());
@@ -217,6 +245,83 @@
     posting = false;
   }
 
+  async function share() {
+    if (cur && (await profiles.allow('share', say))) sharing = cur;
+  }
+
+  // ── rotate: ↻ turns the picture 90° (shown at once); a moment after the last turn it is saved to
+  // Drive as a new version of the same file (JPEG: lossless, only the orientation tag changes).
+  let turns = $state<Record<string, number>>({});
+  let rotTimer: ReturnType<typeof setTimeout> | null = null;
+  let rotating = $state(false);
+  const ROTATABLE = /^image\/(jpeg|jpg|png|webp)$/;
+  async function rotate() {
+    const f = cur;
+    if (!f || !drive || !isImage(f) || rotating) return;
+    if (!ROTATABLE.test(f.mimeType)) { say('Only JPEG, PNG and WebP pictures can be rotated here.'); return; }
+    if (!turns[f.id] && !(await profiles.allow('edit', say))) return;
+    turns = { ...turns, [f.id]: ((turns[f.id] ?? 0) + 1) % 4 };
+    if (rotTimer) clearTimeout(rotTimer);
+    rotTimer = setTimeout(() => void saveRotation(f), 1300);
+  }
+  async function saveRotation(f: DFile) {
+    const t = turns[f.id] ?? 0;
+    if (!t || !drive) return;
+    rotating = true;
+    toast.show(`Saving the rotated picture…`, undefined, 10000);
+    try {
+      const out = await rotateBlob(await drive.download(f), f.mimeType, t);
+      const meta = { name: f.name, parents: f.parents ?? [], mimeType: f.mimeType };
+      let saved: Partial<DFile> = {};
+      if (out.size <= 5 * 1024 * 1024) saved = await drive.uploadSmall(meta, out, f.id);
+      else { const url = await drive.startUpload(meta, out.size, f.id); await sendFile(url, out, () => {}); saved = await drive.get(f.id); }
+      const old = full[f.id];
+      if (old?.startsWith('blob:')) URL.revokeObjectURL(old);
+      full = { ...full, [f.id]: URL.createObjectURL(out) };
+      turns = { ...turns, [f.id]: 0 };
+      if (all) all = all.map((x) => (x.id === f.id ? { ...x, ...saved, size: String(out.size) } : x));
+      toast.show('Rotated, saved in Drive', undefined, 2500);
+    } catch (e) {
+      turns = { ...turns, [f.id]: 0 };
+      toast.show(`Not rotated: ${failText(e)}`);
+    }
+    rotating = false;
+  }
+
+  // ── zoom: + / − (or the toolbar), the mouse wheel, double-click; drag (or the arrows) to look
+  // around; 0 or Back goes back to the whole picture. Zooming in loads the full-size original.
+  let zoom = $state(1);
+  let panX = $state(0);
+  let panY = $state(0);
+  let stageW = $state(0);
+  let stageH = $state(0);
+  const clampPan = () => {
+    const mx = ((zoom - 1) * stageW) / 2, my = ((zoom - 1) * stageH) / 2;
+    panX = Math.max(-mx, Math.min(mx, panX));
+    panY = Math.max(-my, Math.min(my, panY));
+  };
+  function zoomBy(f: number) {
+    zoom = Math.max(1, Math.min(6, Math.round(zoom * f * 100) / 100));
+    if (zoom === 1) { panX = 0; panY = 0; } else clampPan();
+  }
+  function resetZoom() { zoom = 1; panX = 0; panY = 0; }
+  function pan(dx: number, dy: number) { panX -= dx * stageW * 0.2; panY -= dy * stageH * 0.2; clampPan(); }
+  $effect(() => { void cur?.id; resetZoom(); });
+  $effect(() => {
+    const c = cur;
+    if (zoom > 1 && c && drive && isImage(c) && /^image\/(jpeg|png|gif|webp|avif)$/.test(c.mimeType) && !full[c.id]) {
+      drive.mediaUrl(c).then((u) => (full = { ...full, [c.id]: u }), () => {});
+    }
+  });
+  let drag: { x: number; y: number; px: number; py: number } | null = null;
+  function picStyle(f: DFile): string {
+    const t = turns[f.id] ?? 0;
+    const tf = `translate(${panX}px, ${panY}px) scale(${zoom}) rotate(${t * 90}deg)`;
+    // A quarter turn: lay the picture out in a box with width and height swapped, then turn it.
+    const box = t % 2 && stageW && stageH ? `width:${stageH}px;height:${stageW}px;left:${(stageW - stageH) / 2}px;top:${(stageH - stageW) / 2}px;right:auto;bottom:auto;` : '';
+    return `${box}transform:${tf};${drag ? '' : 'transition:transform .18s ease;'}`;
+  }
+
   async function openComments() {
     panel = 'comments';
     await tick();
@@ -224,6 +329,7 @@
   }
 
   function back() {
+    if (zoom > 1) { resetZoom(); return; }
     if (panel) { panel = ''; return; }
     if (document.fullscreenElement) { void document.exitFullscreen(); return; }
     if (VIRTUAL[folderId]) nav('/view');
@@ -238,7 +344,7 @@
   let topEl = $state<HTMLElement | null>(null);
   let topH = $state(0);
   let stripH = $state(0);
-  const toolbar = () => [...(topEl?.querySelectorAll<HTMLElement>('button, a') ?? [])].filter((b) => b.offsetParent);
+  const toolbar = () => [...(topEl?.querySelectorAll<HTMLElement>('button:not([disabled]), a') ?? [])].filter((b) => b.offsetParent);
   function toPicture() {
     (document.activeElement as HTMLElement | null)?.blur?.();
     wake();
@@ -259,18 +365,21 @@
       if (e.key === 'ArrowUp') return stop();
       return false; // OK clicks the focused button
     }
+    // The toast's Undo (focused right after binning on a TV): OK presses it.
+    if (a?.closest('.toast') && e.key === 'Enter') return false;
     if (a && a !== document.body && !a.closest('.panel')) a.blur(); // nothing on the picture keeps focus
     switch (e.key) {
-      case 'ArrowRight': go(index + 1, !chrome); return stop();
-      case 'ArrowLeft': go(index - 1, !chrome); return stop();
+      case 'ArrowRight': if (zoom > 1) pan(1, 0); else go(index + 1, !chrome); return stop();
+      case 'ArrowLeft': if (zoom > 1) pan(-1, 0); else go(index - 1, !chrome); return stop();
       case 'ArrowUp': {
+        if (zoom > 1) { pan(0, -1); return stop(); }
         wake();
         // Start on the first action (not Back, so a stray OK does not leave the viewer).
         const first = toolbar().find((b) => b.closest('.acts'));
         (first ?? toolbar()[0])?.focus();
         return stop();
       }
-      case 'ArrowDown': chrome = !chrome; if (chrome) wake(); return stop();
+      case 'ArrowDown': if (zoom > 1) pan(0, 1); else { chrome = !chrome; if (chrome) wake(); } return stop();
       case 'Enter':
         if (videoEl) { videoEl.paused ? void videoEl.play() : videoEl.pause(); wake(); }
         else { chrome = !chrome; if (chrome) wake(); }
@@ -288,16 +397,25 @@
     }
     if (e.metaKey || e.ctrlKey || e.altKey) { if (e.key === 'Backspace' && e.metaKey) { e.preventDefault(); void binCurrent(); } return; }
     if (tv.on && tvKey(e)) return;
+    // OK/Enter/Space on a focused button is that button's click (Bin, Share…), not a viewer key.
+    const a = document.activeElement as HTMLElement | null;
+    if ((e.key === 'Enter' || e.key === ' ') && a && a !== document.body && a.matches('button, a, [role="button"], input, select, summary')) return;
     let handled = true;
     switch (e.key) {
-      case 'ArrowRight': case 'PageDown': case 'MediaTrackNext': go(index + 1); break;
-      case 'ArrowLeft': case 'PageUp': case 'MediaTrackPrevious': go(index - 1); break;
+      case 'ArrowRight': if (zoom > 1) pan(1, 0); else go(index + 1); break;
+      case 'ArrowLeft': if (zoom > 1) pan(-1, 0); else go(index - 1); break;
+      case 'PageDown': case 'MediaTrackNext': go(index + 1); break;
+      case 'PageUp': case 'MediaTrackPrevious': go(index - 1); break;
+      case '+': case '=': zoomBy(1.5); break;
+      case '-': case '_': zoomBy(1 / 1.5); break;
+      case '0': resetZoom(); break;
+      case 'r': case 'R': void rotate(); break;
       case 'Home': go(0); break;
       case 'End': go((list?.length ?? 1) - 1); break;
       case 'Delete': case 'd': case 'D': case 'ColorF0Red': void binCurrent(); break;
       case 'c': case 'C': void openComments(); break;
       case 'i': case 'I': panel = panel === 'info' ? '' : 'info'; break;
-      case 's': case 'S': if (cur) sharing = cur; break;
+      case 's': case 'S': void share(); break;
       case '*': case 'ColorF2Yellow': void star(); break;
       case 'f': case 'F': void toggleFull(); break;
       case ' ': case 'MediaPlayPause': case 'Enter':
@@ -307,6 +425,7 @@
         break;
       case 'ArrowUp': case 'ArrowDown':
         wake();
+        if (zoom > 1 && !videoEl) { pan(0, e.key === 'ArrowUp' ? -1 : 1); break; }
         if (videoEl && e.key === 'ArrowUp') videoEl.volume = Math.min(1, videoEl.volume + 0.1);
         else if (videoEl) videoEl.volume = Math.max(0, videoEl.volume - 0.1);
         break;
@@ -390,19 +509,30 @@
       <div class="acts">
         <label class="tog small"><input type="checkbox" bind:checked={onlyMedia} /> Photos & videos only</label>
         {#if !VIRTUAL[folderId]}<label class="tog small"><input type="checkbox" bind:checked={deep} /> Subfolders</label>{/if}
-        <button class="ghost icon" title="Star (*)" aria-label="Star" onclick={star}>{cur?.starred ? '★' : '☆'}</button>
+        {#if tv.on && !VIRTUAL[folderId]}<button class="ghost" class:live={deep} aria-pressed={deep} title="Include files in subfolders" onclick={() => (deep = !deep)}>Subfolders</button>{/if}
+        {#if cur && isImage(cur)}
+          <button class="ghost icon" title="Zoom out (−)" aria-label="Zoom out" disabled={zoom <= 1} onclick={() => zoomBy(1 / 1.5)}>−</button>
+          <button class="ghost icon" title="Zoom in (+)" aria-label="Zoom in" onclick={() => zoomBy(1.5)}>+</button>
+          {#if profiles.can('edit')}<button class="ghost icon" title="Rotate (R), saved to Drive" aria-label="Rotate" disabled={rotating} onclick={rotate}>↻</button>{/if}
+        {/if}
+        {#if profiles.can('edit')}<button class="ghost icon" title="Star (*)" aria-label="Star" onclick={star}>{cur?.starred ? '★' : '☆'}</button>{/if}
         <button class="ghost" title="Comment (C)" onclick={openComments}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.4A8 8 0 1 1 21 12z"/></svg>Comment</button>
         {#if !tv.on}<button class="ghost" class:live={follow.on} title="Show on the TV (it follows as you move)" aria-pressed={follow.on} onclick={toggleFollow}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>{follow.on ? 'On TV' : 'TV'}</button>{/if}
-        <button class="ghost" title="Share link (S)" onclick={() => cur && (sharing = cur)}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>Share</button>
+        {#if profiles.can('share')}<button class="ghost" title="Share link (S)" onclick={share}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>Share</button>{/if}
         <button class="ghost icon" title="Details (I)" aria-label="Details" onclick={() => (panel = panel === 'info' ? '' : 'info')}>ⓘ</button>
         {#if cur}<a class="btn ghost icon" title="Open in Google Drive" aria-label="Open in Google Drive" href={driveLink(cur)} target="_blank" rel="noopener">↗</a>{/if}
-        <button class="ghost danger" title="Move to bin (Del)" onclick={binCurrent}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Bin</button>
+        {#if profiles.can('bin')}<button class="ghost danger" title="Move to bin (Del)" onclick={binCurrent}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Bin</button>{/if}
       </div>
     </header>
 
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="stage" bind:this={stageEl}
+    <div class="stage" bind:this={stageEl} bind:clientWidth={stageW} bind:clientHeight={stageH}
+      onwheel={(e) => { if (!cur || !isImage(cur)) return; e.preventDefault(); zoomBy(e.deltaY < 0 ? 1.15 : 1 / 1.15); }}
+      ondblclick={() => { if (cur && isImage(cur)) { if (zoom > 1) resetZoom(); else zoomBy(2.5); } }}
+      onpointerdown={(e) => { if (zoom > 1) { drag = { x: e.clientX, y: e.clientY, px: panX, py: panY }; (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } }}
+      onpointermove={(e) => { if (drag) { panX = drag.px + e.clientX - drag.x; panY = drag.py + e.clientY - drag.y; clampPan(); } }}
+      onpointerup={() => (drag = null)}
       ontouchstart={(e) => (touchX = e.touches[0]?.clientX ?? 0)}
       ontouchend={(e) => { const dx = (e.changedTouches[0]?.clientX ?? 0) - touchX; if (Math.abs(dx) > 50) go(index + (dx < 0 ? 1 : -1)); else wake(); }}>
       {#if loadError}
@@ -417,7 +547,7 @@
             <!-- svelte-ignore a11y_media_has_caption -->
             <video bind:this={videoEl} src={mydrive.drive.streamUrl(cur)} poster={thumb(cur, px(cur))} controls autoplay playsinline onclick={(e) => e.stopPropagation()}></video>
           {:else if isImage(cur)}
-            <img class="pic" src={full[cur.id] ?? thumb(cur, px(cur))} alt={cur.name} referrerpolicy="no-referrer" />
+            <img class="pic" class:zoomed={zoom > 1} src={full[cur.id] ?? thumb(cur, px(cur))} alt={cur.name} referrerpolicy="no-referrer" decoding="async" draggable="false" style={picStyle(cur)} />
           {:else if isAudio(cur)}
             <div class="msg"><FileIcon file={cur} size={6} /><audio src={mydrive.drive.streamUrl(cur)} controls autoplay onclick={(e) => e.stopPropagation()}></audio></div>
           {:else if isPdf(cur) && full[cur.id]}
@@ -471,7 +601,7 @@
             <dt>Shared</dt><dd>{cur.shared ? 'Yes' : 'No'}</dd>
           </dl>
           <div class="row">
-            <button class="small" onclick={() => (sharing = cur!)}>Share link</button>
+            {#if profiles.can('share')}<button class="small" onclick={share}>Share link</button>{/if}
             <a class="btn small" href={driveLink(cur)} target="_blank" rel="noopener">Open in Drive</a>
           </div>
         {:else}
@@ -530,6 +660,7 @@
   .stage { position: absolute; top: var(--top); bottom: var(--bottom); left: 0; right: var(--side); display: grid; place-items: center; overflow: hidden; transition: top 0.25s ease, bottom 0.25s ease; }
   /* Absolutely placed: a percentage height does not resolve inside the grid stage, which made
      pictures fill the width and get cropped. Now the whole picture always fits. */
+  .pic.zoomed { cursor: grab; }
   .pic, video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; animation: fade 0.18s ease-out; }
   .small-pic { position: static; width: auto; height: auto; max-width: 100%; max-height: 50vh; border-radius: 12px; }
   @keyframes fade { from { opacity: 0.2; } }

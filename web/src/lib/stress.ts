@@ -66,6 +66,7 @@ export class StressDrive implements DriveApi {
     this.kids.set(meta.parents[0]!, list);
     return f;
   }
+  async download(): Promise<Blob> { throw new Error('no'); }
   async mediaUrl() { return ''; }
   streamUrl() { return ''; }
 }

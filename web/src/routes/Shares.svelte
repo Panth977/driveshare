@@ -10,6 +10,7 @@
   import FileIcon from '../components/drive/FileIcon.svelte';
   import Usage from '../components/Usage.svelte';
   import { linked } from '../lib/linked.svelte.ts';
+  import ProfilesEditor from '../components/profiles/ProfilesEditor.svelte';
 
   const isOwner = $derived(demoMode || account.user?.role === 'admin');
 
@@ -134,6 +135,7 @@
       </div>
     {/if}
   </section>
+  <div style="margin-top:0.8rem"><ProfilesEditor /></div>
 </main>
 
 <style>

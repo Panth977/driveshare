@@ -3,6 +3,9 @@
   import { router, nav } from '../lib/router.svelte.ts';
   import { watchSends } from '../lib/remote.svelte.ts';
   import { toast } from '../lib/toast.svelte.ts';
+  import { profiles } from '../lib/profiles.svelte.ts';
+  import ProfilePicker from '../components/profiles/ProfilePicker.svelte';
+  import PinPad from '../components/profiles/PinPad.svelte';
   import { linked } from '../lib/linked.svelte.ts';
   import { demoMode } from '../lib/mydrive.svelte.ts';
   import TopBar from '../components/TopBar.svelte';
@@ -15,6 +18,9 @@
 
   // Linked accounts get the same app on their own Drive (My Drive, Viewer), plus the folders they are linked to.
   $effect(() => { linked.load(); });
+
+  // Household profiles (who may do what on a shared TV).
+  $effect(() => { if (account.user) profiles.watch(); });
 
   // On the TV: open whatever a phone sends ("Send to TV").
   $effect(() => {
@@ -41,6 +47,8 @@
   </SignIn>
 {:else if !allowed}
   <div class="center muted">This account cannot use this DriveShare.</div>
+{:else if profiles.needsPick}
+  <ProfilePicker />
 {:else if view}
   <Viewer folderId={view[1] ?? ''} fileId={view[2] ?? ''} />
 {:else if tv.on}
@@ -53,3 +61,5 @@
     <Shares />
   {/if}
 {/if}
+
+{#if profiles.ask}<PinPad />{/if}

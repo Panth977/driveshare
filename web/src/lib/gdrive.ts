@@ -76,6 +76,8 @@ export interface DriveApi {
    * the caller retries (rate limits are common when sending thousands of files).
    */
   uploadSmall(meta: { name: string; parents: string[]; mimeType?: string; modifiedTime?: string }, file: Blob, replace?: string, signal?: AbortSignal): Promise<DFile>;
+  /** The file's bytes. */
+  download(f: DFile): Promise<Blob>;
   /** A blob: or http URL that shows the file's bytes (images, PDFs). */
   mediaUrl(f: DFile): Promise<string>;
   /** A URL a <video>/<audio> element can stream with Range requests. */
@@ -294,7 +296,7 @@ export class RestDrive implements DriveApi {
       file,
       `\r\n--${boundary}--`,
     ]);
-    const url = replace ? `${UPLOAD}/files/${encodeURIComponent(replace)}?uploadType=multipart&fields=id,name,size,parents,mimeType` : `${UPLOAD}/files?uploadType=multipart&fields=id,name,size,parents,mimeType`;
+    const url = replace ? `${UPLOAD}/files/${encodeURIComponent(replace)}?uploadType=multipart&fields=id,name,size,parents,mimeType,modifiedTime,thumbnailLink,imageMediaMetadata(width,height,rotation)` : `${UPLOAD}/files?uploadType=multipart&fields=id,name,size,parents,mimeType,modifiedTime,thumbnailLink,imageMediaMetadata(width,height,rotation)`;
     for (let attempt = 0; ; attempt++) {
       const res = await fetch(url, { method: replace ? 'PATCH' : 'POST', headers: { authorization: `Bearer ${await this.token()}`, 'content-type': `multipart/related; boundary=${boundary}` }, body, ...(signal ? { signal } : {}) });
       if (res.ok) return (await res.json()) as DFile;
@@ -302,6 +304,12 @@ export class RestDrive implements DriveApi {
       const e = (await res.json().catch(() => ({}))) as { error?: { message?: string; errors?: { reason?: string }[] } };
       throw new DriveFail(res.status, e.error?.message ?? `Drive answered ${res.status}`, e.error?.errors?.[0]?.reason);
     }
+  }
+
+  async download(f: DFile): Promise<Blob> {
+    const res = await fetch(`${API}/files/${encodeURIComponent(f.id)}?alt=media`, { headers: { authorization: `Bearer ${await this.token()}` } });
+    if (!res.ok) throw new DriveFail(res.status, `Could not download ${f.name} (${res.status})`);
+    return res.blob();
   }
 
   async mediaUrl(f: DFile): Promise<string> {

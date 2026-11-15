@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  export function autofocus(el: HTMLElement) { setTimeout(() => el.focus(), 60); }
+  export function autofocus(el: HTMLElement, on: boolean = true) { if (on) setTimeout(() => el.focus(), 60); }
 </script>
 
 <script lang="ts">
@@ -21,6 +21,7 @@
   import ShareDialog from '../components/drive/ShareDialog.svelte';
   import Prompt from '../components/drive/Prompt.svelte';
   import Toast from '../components/Toast.svelte';
+  import { profiles } from '../lib/profiles.svelte.ts';
 
   let { place }: { place: string } = $props();
 
@@ -93,9 +94,9 @@
     if (isFolder(f)) nav(`/drive/${f.id}`);
     else nav(`/view/${f.parents?.[0] ?? folderId ?? 'recent'}/${f.id}`);
   }
-  function previewAll(f?: DFile) {
+  function previewAll(f?: DFile, deep = false) {
     const id = f ? f.id : virtual === 'recent' ? 'recent' : virtual === 'starred' ? 'starred' : folderId;
-    if (id) nav(`/view/${id}`);
+    if (id) nav(`/view/${id}${deep ? '?deep=1' : ''}`);
   }
 
   // Hold OK (or press the menu key) for actions.
@@ -120,6 +121,7 @@
   }
 
   async function star(f: DFile) {
+    if (!(await profiles.allow('edit', (t) => toast.show(t)))) return;
     const r = await drive!.update(f.id, { starred: !f.starred }).catch((e) => { toast.show(failText(e)); return null; });
     if (r && items) { items = items.map((x) => (x.id === f.id ? { ...x, starred: r.starred } : x)); toast.show(r.starred ? 'Starred' : 'Star removed', undefined, 1500); }
   }
@@ -190,11 +192,16 @@
         {#if !virtual && folder && folderId !== mydrive.rootId}<span class="hint">· <kbd>Back</kbd> to go up</span>{/if}
       </div>
     </div>
-    {#if items?.some((f) => !isFolder(f))}
-      <button class="play" onclick={() => previewAll()}>
-        <svg viewBox="0 0 24 24" width="1em" height="1em"><path d="M8 5v14l11-7z" fill="currentColor" /></svg> Show all
-      </button>
-    {/if}
+    <div class="plays">
+      {#if items?.some((f) => !isFolder(f))}
+        <button class="play" onclick={() => previewAll()}>
+          <svg viewBox="0 0 24 24" width="1em" height="1em"><path d="M8 5v14l11-7z" fill="currentColor" /></svg> Show all
+        </button>
+      {/if}
+      {#if !virtual && items?.some((f) => isFolder(f))}
+        <button class="play alt" onclick={() => previewAll(undefined, true)}>With subfolders</button>
+      {/if}
+    </div>
   </section>
 
   {#if mydrive.state === 'needs-full'}
@@ -238,18 +245,20 @@
   <div class="scrim" data-modal onkeydown={(e) => { if (isBack(e)) { e.preventDefault(); e.stopPropagation(); menuFor = null; restoreFocus(); } }}>
     <div class="sheet">
       {#if menuFor.id === '__me'}
-        <h2>{account.user?.email}</h2>
-        <button use:autofocus onclick={() => { menuFor = null; void account.signOut(); }}>Sign out</button>
+        <h2>{profiles.current ? `${profiles.current.name} · ` : ''}{account.user?.email}</h2>
+        {#if profiles.active}<button use:autofocus onclick={() => { menuFor = null; profiles.leave(); }}>Switch profile</button>{/if}
+        <button use:autofocus={!profiles.active} onclick={() => { menuFor = null; void account.signOut(); }}>Sign out</button>
         {#if !inTvApp}<button onclick={() => { menuFor = null; tv.toggle(); }}>Leave TV mode</button>{/if}
         <button onclick={() => { menuFor = null; restoreFocus(); }}>Close</button>
       {:else}
         {@const f = menuFor}
         <h2 class="ellipsis">{f.name}</h2>
         <button use:autofocus onclick={() => { menuFor = null; open(f); }}>{isFolder(f) ? 'Open' : 'View'}</button>
-        {#if isFolder(f)}<button onclick={() => { menuFor = null; previewAll(f); }}>Show everything, one by one</button>{/if}
-        <button onclick={() => { menuFor = null; sharing = f; }}>Share link (QR code)</button>
-        <button onclick={() => { menuFor = null; void star(f); restoreFocus(); }}>{f.starred ? 'Remove star' : 'Star'}</button>
-        <button class="danger" onclick={() => { menuFor = null; confirmBin = f; }}>Move to bin</button>
+        {#if isFolder(f)}<button onclick={() => { menuFor = null; previewAll(f); }}>Show everything, one by one</button>
+          <button onclick={() => { menuFor = null; previewAll(f, true); }}>Show everything, with subfolders</button>{/if}
+        {#if profiles.can('share')}<button onclick={async () => { menuFor = null; if (await profiles.allow('share', (t) => toast.show(t))) sharing = f; }}>Share link (QR code)</button>{/if}
+        {#if profiles.can('edit')}<button onclick={() => { menuFor = null; void star(f); restoreFocus(); }}>{f.starred ? 'Remove star' : 'Star'}</button>{/if}
+        {#if profiles.can('bin')}<button class="danger" onclick={async () => { menuFor = null; if (await profiles.allow('bin', (t) => toast.show(t))) confirmBin = f; else restoreFocus(); }}>Move to bin</button>{/if}
         <button onclick={() => { menuFor = null; restoreFocus(); }}>Close</button>
       {/if}
     </div>
@@ -280,6 +289,9 @@
   kbd { font-family: inherit; font-size: 0.75em; padding: 0.05em 0.45em; border-radius: 0.3em; border: 1px solid var(--line-2); background: var(--panel); color: var(--ink-2); }
   .play { font-size: 1rem; padding: 0.7rem 1.4rem; border-radius: 99px; background: var(--accent); color: var(--accent-ink); border: 0; font-weight: 700; }
   .play:focus { background: #fff; }
+  .plays { display: flex; gap: 0.6rem; }
+  .play.alt { background: var(--raise); color: var(--ink); }
+  .play.alt:focus { background: #fff; color: #0d0f12; }
   .grid { display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); gap: 1.4rem 1.1rem; }
   .tile { min-width: 0; display: grid; gap: 0.35rem; text-align: left; padding: 0; border: 0; background: transparent; color: var(--ink); border-radius: 0.9rem; transition: transform 0.15s ease; }
   .tile:hover { background: transparent; }

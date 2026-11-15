@@ -8,6 +8,14 @@ service cloud.firestore {
       match /private/{doc} {
         allow read, write: if false;
       }
+      // Household profiles (one doc): the account's own browsers read and write it.
+      match /settings/{doc} {
+        allow read: if request.auth != null && request.auth.uid == uid;
+        allow write: if request.auth != null && request.auth.uid == uid && doc == 'profiles'
+          && request.resource.data.keys().hasOnly(['profiles', 'updatedAt'])
+          && request.resource.data.profiles is string && request.resource.data.profiles.size() <= 20000
+          && request.resource.data.updatedAt == request.time;
+      }
       // Send to TV: an account's own browsers write `now`, its TV reads it. Nothing else.
       match /remote/{doc} {
         allow read: if request.auth != null && request.auth.uid == uid;

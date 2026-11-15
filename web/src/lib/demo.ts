@@ -111,6 +111,7 @@ export class DemoDrive implements DriveApi {
   async unshareAnyone(fid: string) { this.perms.delete(fid); }
   async startUpload(): Promise<string> { throw new Error('Uploads are off in the demo'); }
   async uploadSmall(): Promise<DFile> { throw new Error('Uploads are off in the demo'); }
+  async download(): Promise<Blob> { throw new Error('Not in the demo'); }
   async mediaUrl(f: DFile) { return art(f.name.length * 7 + f.id.length, 1600, 1200, f.name); }
   streamUrl() { return ''; }
 }

@@ -44,6 +44,17 @@ export const remote = collection('users/{uid}/remote', {
 });
 
 /**
+ * Household profiles for shared screens (the TV): who may comment, share, edit or bin, and an
+ * optional PIN (salted SHA-256). `profiles` is JSON; written by the account's own browsers.
+ * A convenience lock for one family TV, not account security: anyone holding the account's
+ * session can edit it.
+ */
+export const settings = collection('users/{uid}/settings', {
+  fields: { profiles: f.string({ max: 20000 }), updatedAt: f.timestamp() },
+  indexes: [],
+});
+
+/**
  * A shared folder in the owner's Drive with a size cap. Written only by functions;
  * the owner reads it (rules). `secret` is the upload link's key.
  */
@@ -138,4 +149,4 @@ export const tvLogins = collection('tvLogins', {
   indexes: [],
 });
 
-export const schema = defineSchema({ users, drive, remote, shares, uploads, transfers, tvLogins });
+export const schema = defineSchema({ users, drive, remote, settings, shares, uploads, transfers, tvLogins });
