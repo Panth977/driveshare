@@ -267,7 +267,7 @@
   .top { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 1.4rem; padding: 1.1rem 0 0.9rem; background: linear-gradient(var(--bg) 70%, transparent); }
   .brand { display: flex; align-items: center; gap: 0.6rem; font-weight: 750; font-size: 1.1rem; }
   .brand img { width: 1.8rem; height: 1.8rem; }
-  .places { display: flex; gap: 0.4rem; overflow: hidden; }
+  .places { display: flex; gap: 0.4rem; overflow: hidden; min-width: 0; flex: 1 1 auto; }
   .places button { border: 0; background: transparent; color: var(--muted); font-size: 0.95rem; font-weight: 650; padding: 0.45rem 1rem; border-radius: 99px; white-space: nowrap; max-width: 14rem; overflow: hidden; text-overflow: ellipsis; display: inline-block; }
   .places button.on { background: var(--raise); color: var(--ink); }
   .places button:focus { background: #fff; color: #0d0f12; }
@@ -280,8 +280,8 @@
   kbd { font-family: inherit; font-size: 0.75em; padding: 0.05em 0.45em; border-radius: 0.3em; border: 1px solid var(--line-2); background: var(--panel); color: var(--ink-2); }
   .play { font-size: 1rem; padding: 0.7rem 1.4rem; border-radius: 99px; background: var(--accent); color: var(--accent-ink); border: 0; font-weight: 700; }
   .play:focus { background: #fff; }
-  .grid { display: grid; grid-template-columns: repeat(var(--cols), 1fr); gap: 1.4rem 1.1rem; }
-  .tile { display: grid; gap: 0.35rem; text-align: left; padding: 0; border: 0; background: transparent; color: var(--ink); border-radius: 0.9rem; transition: transform 0.15s ease; }
+  .grid { display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); gap: 1.4rem 1.1rem; }
+  .tile { min-width: 0; display: grid; gap: 0.35rem; text-align: left; padding: 0; border: 0; background: transparent; color: var(--ink); border-radius: 0.9rem; transition: transform 0.15s ease; }
   .tile:hover { background: transparent; }
   .tile:focus { outline: none; box-shadow: none; transform: scale(1.06); z-index: 1; }
   .tile:focus .art { box-shadow: 0 0 0 0.2rem #fff, 0 1.2rem 2.4rem -0.6rem rgb(0 0 0 / 0.8); }

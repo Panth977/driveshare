@@ -353,15 +353,9 @@ export const isRateLimit = (e: unknown) => e instanceof DriveFail && (e.status =
 /** Worth trying again later (network, server, rate limit). */
 export const isTransient = (e: unknown) => !(e instanceof DriveFail) || e.status >= 500 || e.status === 408 || isRateLimit(e);
 
-/** TV order: folders (by name), then pictures and videos newest first, then the rest. The TV grid and the viewer use the same order. */
+/** TV order: folders first, then everything else, each by name (natural: IMG_2 before IMG_10). The TV grid and the viewer use the same order. */
 export function sortTv(l: DFile[]): DFile[] {
-  const k = (f: DFile) => (isFolder(f) ? 0 : isMedia(f) ? 1 : 2);
-  return [...l].sort((a, b) => {
-    const ka = k(a), kb = k(b);
-    if (ka !== kb) return ka - kb;
-    if (ka === 0) return a.name.localeCompare(b.name, undefined, { numeric: true });
-    return String(b.modifiedTime).localeCompare(String(a.modifiedTime));
-  });
+  return [...l].sort((a, b) => (Number(isFolder(b)) - Number(isFolder(a))) || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
 }
 
 export const isFolder = (f: Pick<DFile, 'mimeType'>) => f.mimeType === FOLDER_MIME;
