@@ -6,7 +6,7 @@
   // The TV screen: a 10-foot layout for the remote. Big tiles in a grid, one focused at a time;
   // OK opens, Back goes up, holding OK (or the menu key) opens actions. Uploads and syncs stay on
   // the laptop; the TV is for looking.
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { formatBytes } from '@driveshare/backend/shared';
   import { account } from '../lib/account.svelte.ts';
   import { mydrive } from '../lib/mydrive.svelte.ts';
@@ -76,7 +76,9 @@
       restoreFocus();
     } catch (e) { error = failText(e); }
   }
-  $effect(() => { void place; void mydrive.rootId; if (drive) void load(); });
+  // (untrack: load() reads and sets the list right away when it is in memory; that must not
+  // make this effect depend on the list it sets.)
+  $effect(() => { void place; void mydrive.rootId; if (drive) untrack(() => void load()); });
 
 
   const shown = $derived(items ? items.slice(0, limit) : null);

@@ -140,7 +140,7 @@
       }
     } catch (e) { loadError = failText(e); }
   }
-  $effect(() => { void folderId; void deep; if (drive) void load(); });
+  $effect(() => { void folderId; void deep; if (drive) untrack(() => void load()); });
   $effect(() => { localStorage.setItem('ds.v.media', onlyMedia ? '1' : '0'); });
 
   // A new file id in the address (sent from a phone to this TV, same folder): jump to it.
