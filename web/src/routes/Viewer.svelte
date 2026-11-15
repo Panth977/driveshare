@@ -717,7 +717,7 @@
             {#if cannot[cur.id]}
               <div class="msg">
                 {#if thumb(cur, px(cur))}<img class="pic small-pic" src={thumb(cur, px(cur))} alt="" referrerpolicy="no-referrer" />{/if}
-                <p>This video's format ({cur.name.split('.').pop()?.toUpperCase()}) cannot play in a browser or on the TV.</p>
+                <p>This video's format ({cur.name.split('.').pop()?.toUpperCase()}) cannot play in a browser or on the TV. A playable MP4 copy is on its way (old videos are being converted).</p>
                 <a class="btn" href={driveLink(cur)} target="_blank" rel="noopener" onclick={(e) => e.stopPropagation()}>Open in Google Drive</a>
               </div>
             {:else if videoGo}

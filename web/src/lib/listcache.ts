@@ -39,7 +39,7 @@ export const peek = (id: string, opts: { orderBy?: string } = {}): DFile[] | und
 /** Folder details seen lately (name, parents), so the viewer does not ask Drive each time. */
 export const folderMeta = new Map<string, DFile>();
 
-const sig = (l: DFile[]) => l.map((f) => `${f.id}:${f.name}:${f.modifiedTime}:${f.starred ? 1 : 0}`).join('|');
+const sig = (l: DFile[]) => l.map((f) => `${f.id}:${f.name}:${f.modifiedTime}:${f.starred ? 1 : 0}:${f.appProperties?.dsPlay ?? ''}`).join('|');
 
 /**
  * Children of a folder: the cached copy right away (if any), then `onFresh` with Drive's answer

@@ -9,6 +9,8 @@ export { FOLDER_MIME };
 
 export interface DFile {
   id: string;
+  /** Our labels. dsPlay/dsPlaySize: an MP4 copy to play instead (tools/convert-videos.mjs). */
+  appProperties?: Record<string, string>;
   name: string;
   mimeType: string;
   size?: string;
@@ -40,7 +42,7 @@ export interface DPermission { id: string; type: string; role: string; emailAddr
 
 export interface Quota { limit?: string; usage?: string; usageInDrive?: string; usageInDriveTrash?: string }
 
-export const FIELDS = 'id,name,mimeType,size,quotaBytesUsed,parents,modifiedTime,createdTime,thumbnailLink,hasThumbnail,iconLink,starred,shared,ownedByMe,webViewLink,imageMediaMetadata(width,height,time,cameraModel),videoMediaMetadata(width,height,durationMillis)';
+export const FIELDS = 'id,name,mimeType,size,appProperties,quotaBytesUsed,parents,modifiedTime,createdTime,thumbnailLink,hasThumbnail,iconLink,starred,shared,ownedByMe,webViewLink,imageMediaMetadata(width,height,time,cameraModel),videoMediaMetadata(width,height,durationMillis)';
 
 export class DriveFail extends Error {
   constructor(readonly status: number, message: string, readonly reason?: string) {
@@ -322,13 +324,21 @@ export class RestDrive implements DriveApi {
   }
 
   streamUrl(f: DFile): string {
-    return `/__media/${encodeURIComponent(f.id)}?size=${bytesOf(f)}&type=${encodeURIComponent(f.mimeType)}`;
+    const p = playable(f);
+    return `/__media/${encodeURIComponent(p.id)}?size=${p.size}&type=${encodeURIComponent(p.type)}`;
   }
+}
+
+/** What to stream for a video: its MP4 copy when it has one (old formats), else the file itself. */
+export function playable(f: DFile): { id: string; size: number; type: string } {
+  const copy = f.appProperties?.dsPlay;
+  return copy ? { id: copy, size: Number(f.appProperties?.dsPlaySize || 0), type: 'video/mp4' } : { id: f.id, size: bytesOf(f), type: f.mimeType };
 }
 
 /** Ask the media worker to fetch a video's first and last bytes now, so it starts quickly. */
 export function warmVideo(f: DFile): void {
-  navigator.serviceWorker?.controller?.postMessage({ type: 'warm', id: f.id, size: bytesOf(f) });
+  const p = playable(f);
+  navigator.serviceWorker?.controller?.postMessage({ type: 'warm', id: p.id, size: p.size });
 }
 
 // ─── the media service worker: lets <video> stream Drive files with our token ─────────────
