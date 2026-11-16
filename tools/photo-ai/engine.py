@@ -566,6 +566,19 @@ class H(BaseHTTPRequestHandler):
                 pid = int(a['pid'])
                 rows = q('SELECT fid, photo FROM faces WHERE person=? ORDER BY score DESC LIMIT 200', (pid,))
                 return self.send(200, [dict(r) for r in rows])
+            if p == '/api/questions':
+                off, lim = int(a.get('offset', 0)), int(a.get('limit', 60))
+                out, seen = [], 0
+                def side(pid):
+                    r = q('SELECT pid,name,n FROM people WHERE pid=?', (pid,), one=True)
+                    return r and {**dict(r), 'faces': [x['fid'] for x in q('SELECT fid FROM faces WHERE person=? ORDER BY score DESC LIMIT 4', (pid,))]}
+                for s_, x, y in list(QUESTIONS):
+                    sx, sy = side(x), side(y)
+                    if not (sx and sy): continue
+                    if seen >= off: out.append({'sim': s_, 'a': sx, 'b': sy})
+                    seen += 1
+                    if len(out) >= lim: break
+                return self.send(200, {'total': len(QUESTIONS), 'items': out})
             if p == '/api/question':
                 while QUESTIONS:
                     s, x, y = QUESTIONS[0]

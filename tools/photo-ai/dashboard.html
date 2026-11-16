@@ -42,6 +42,11 @@
   .q { display:grid; grid-template-columns: 1fr auto 1fr; gap: 20px; align-items: center; }
   .q .faces img { width: 96px; height: 96px; }
   .q .side h3 { margin: 0; }
+  .qlist { display:grid; gap: 10px; }
+  .qrow { display:grid; grid-template-columns: 1fr auto 1fr; gap: 16px; align-items: center; padding: 10px 14px; }
+  .qrow .faces { margin: 4px 0 0; } .qrow .faces img { width: 64px; height: 64px; }
+  .qmid { min-width: 230px; } .qbtn { display:flex; gap: 6px; margin-top: 6px; justify-content: center; }
+  .qn { font-weight: 600; }
   .center { text-align: center; }
   .pill { display:inline-block; padding: 1px 8px; border-radius: 99px; font-size: 12px; background: #0b0e12; border:1px solid var(--line); color: var(--muted); }
   .tabs2 { display:flex; gap: 6px; margin-bottom: 12px; }
@@ -165,25 +170,28 @@ async function people() {
   });
 }
 
-// ── same person? ──
+// ── same person? ── (all of them on one page; answer in any order)
 async function same() {
-  const q = await api('/api/question');
-  if (!q) { $('#main').innerHTML = '<p class="muted">No questions right now. They come after a grouping.</p>'; return; }
-  const side = (p) => `<div class="side card"><h3>${esc(p.name) || '<span class="muted">No name</span>'}</h3><div class="muted small">${fmt(p.n)} photos</div><div class="faces">${p.faces.map((f) => `<img src="/face/${f}">`).join('')}</div></div>`;
-  $('#main').innerHTML = `<p class="muted small">${fmt(q.left)} to go · Y = same person, N = different, S = skip</p>
-    <div class="q">${side(q.a)}<div class="center"><div class="muted small">look alike ${Math.round(q.sim * 100)}%</div>
-      <div style="display:grid;gap:8px;margin-top:10px"><button class="b p" id="y">Same person (Y)</button><button class="b" id="n">Different (N)</button><button class="b" id="s">Skip (S)</button></div></div>${side(q.b)}</div>`;
-  const ans = (same) => api('/api/question/answer', { a: q.a.pid, b: q.b.pid, same }).then(same_);
-  const same_ = () => same();
-  $('#y').onclick = () => ans(true); $('#n').onclick = () => ans(false);
-  $('#s').onclick = () => api('/api/question/answer', { a: q.a.pid, b: q.b.pid, same: false, skip: true }).then(same_);
+  const r = await api('/api/questions?limit=80');
+  if (!r.items.length) { $('#main').innerHTML = '<p class="muted">No questions right now. They come after a grouping.</p>'; return; }
+  const side = (p) => `<div class="qs"><div class="qn">${esc(p.name) || '<span class="muted">No name</span>'} <span class="muted small">· ${fmt(p.n)}</span></div><div class="faces">${p.faces.map((f) => `<img src="/face/${f}" alt="" onerror="this.remove()">`).join('')}</div></div>`;
+  $('#main').innerHTML = `<p class="muted small">${fmt(r.total)} questions${r.total > r.items.length ? ` · showing the ${r.items.length} most alike first` : ''}. Same = joins the two into one person. Answer in any order.</p>
+    <div class="qlist">${r.items.map((q, i) => `<div class="card qrow" data-a="${q.a.pid}" data-b="${q.b.pid}">
+      ${side(q.a)}<div class="center qmid"><div class="muted small">alike ${Math.round(q.sim * 100)}%</div>
+        <div class="qbtn"><button class="b p y">Same</button><button class="b n">Different</button><button class="b s" title="Skip for now">Skip</button></div></div>${side(q.b)}</div>`).join('')}</div>`;
+  document.querySelectorAll('.qrow').forEach((row) => {
+    const a = +row.dataset.a, b = +row.dataset.b;
+    const go = (body, merged) => api('/api/question/answer', { a, b, ...body }).then(() => {
+      row.remove();
+      // Joining two people changes the other questions about them: refresh the list, same scroll.
+      if (merged) { const y = scrollY; same().then(() => scrollTo(0, y)); }
+      else if (!document.querySelector('.qrow')) same();
+    });
+    row.querySelector('.y').onclick = () => go({ same: true }, true);
+    row.querySelector('.n').onclick = () => go({ same: false });
+    row.querySelector('.s').onclick = () => go({ same: false, skip: true });
+  });
 }
-addEventListener('keydown', (e) => {
-  if (view !== 'same' || e.target.tagName === 'INPUT') return;
-  if (e.key === 'y' || e.key === 'Y') $('#y')?.click();
-  if (e.key === 'n' || e.key === 'N') $('#n')?.click();
-  if (e.key === 's' || e.key === 'S') $('#s')?.click();
-});
 
 function render() {
   if (view === 'overview') return poll();
