@@ -241,10 +241,20 @@ def face_turns(im):
         out.append(float(sum(f.det_score for f in r if f.det_score > FACE_MIN)))
     return out
 
-def decide(k_model, p, fk):
+def is_gray(im):
+    """Black-and-white pictures: CT scans, X-rays, documents, old prints. The orientation model
+    was trained on colour photos and guesses wildly on these (mostly "upside down")."""
+    a = np.asarray(im.convert('RGB').resize((64, 64)), dtype=np.float32)
+    return float(np.abs(a - a.mean(2, keepdims=True)).mean()) < 6
+
+def decide(k_model, p, fk, gray=False):
     fk = np.array(fk)
     strong = fk.max() > 0.6 and np.sort(fk)[-2] < fk.max() * 0.5
     kf = int(fk.argmax())
+    if gray:
+        # Only faces can be trusted here: turn when they clearly say so, else leave it as it is.
+        if strong and kf != 0: return kf, ('sure' if kf == k_model else 'ask')
+        return 0, 'sure'
     if strong:
         if kf == k_model: return k_model, 'sure'
         return (kf if p < SURE else k_model), 'ask'
@@ -293,7 +303,7 @@ def analyse(row, data):
         km, p = orient(small)
         fk = [0, 0, 0, 0]
         if km != 0 or p < SURE: fk = face_turns(small)
-        k, verdict = decide(km, p, fk)
+        k, verdict = decide(km, p, fk, gray=is_gray(small))
         status = 'upright' if (k == 0 and verdict == 'sure') else ('auto' if verdict == 'sure' else 'ask')
         q('INSERT OR REPLACE INTO rot(id,k_model,p,fk,k,status,applied,at) VALUES(?,?,?,?,?,?,COALESCE((SELECT applied FROM rot WHERE id=?),0),?)',
           (row['id'], km, p, json.dumps(fk), k, status, row['id'], time.time()))
@@ -455,10 +465,11 @@ def write_loop():
 
 def write_once():
     # 1. Rotations: sure ones and the ones you answered.
-    rows = q("SELECT rot.id, rot.k, rot.answer, rot.status, photos.mtime FROM rot JOIN photos USING(id) WHERE status IN ('auto','answered') AND applied != COALESCE(answer, k) LIMIT 50")
+    target = "CASE WHEN status IN ('auto','answered') THEN COALESCE(answer, k) ELSE 0 END"   # 0 also takes a label off again
+    rows = q(f"SELECT rot.id, rot.k, rot.answer, rot.status, photos.mtime, {target} AS target FROM rot JOIN photos USING(id) WHERE applied != {target} LIMIT 50")
     for r in rows:
         if paused('write'): return True
-        k = r['answer'] if r['status'] == 'answered' else r['k']
+        k = r['target'] or 0
         STAGE['write'] = 'rotation labels'
         label(r['id'], r['mtime'], {'dsTurn': str(k) if k else None})
         q('UPDATE rot SET applied=? WHERE id=?', (k, r['id']))
@@ -511,6 +522,7 @@ def status():
         'rate': round(rate, 1), 'eta_min': round(left / rate / 60) if rate else None,
         'rot': {r['status']: r['n'] for r in q('SELECT status, COUNT(*) n FROM rot GROUP BY status')},
         'rot_written': c('SELECT COUNT(*) FROM rot WHERE applied!=0'),
+        'rot_turned': c("SELECT COUNT(*) FROM rot WHERE status IN ('auto','answered') AND COALESCE(answer, k) != 0"),
         'faces': c('SELECT COUNT(*) FROM faces'), 'with_faces': c('SELECT COUNT(DISTINCT photo) FROM faces'),
         'people': c('SELECT COUNT(*) FROM people WHERE n>0'), 'named': c("SELECT COUNT(*) FROM people WHERE name IS NOT NULL AND name!=''"),
         'questions': len(QUESTIONS), 'face_labels': c('SELECT COUNT(*) FROM photos WHERE faces_label IS NOT NULL'),
@@ -545,7 +557,10 @@ class H(BaseHTTPRequestHandler):
             if p == '/api/status': return self.send(200, status())
             if p == '/api/rot':
                 st = a.get('status', 'ask'); off = int(a.get('offset', 0))
-                rows = q('SELECT rot.id, k, k_model, p, status, answer, photos.name FROM rot JOIN photos USING(id) WHERE status=? ORDER BY at DESC LIMIT 30 OFFSET ?', (st, off))
+                # "turned": every photo shown turned now (turned for you, or by your answer).
+                where = "status IN ('auto','answered') AND COALESCE(answer, k) != 0" if st == 'turned' else 'status=?'
+                rows = q(f'SELECT rot.id, COALESCE(answer, k) AS k, k_model, p, status, answer, photos.name FROM rot JOIN photos USING(id) WHERE {where} ORDER BY at DESC LIMIT 30 OFFSET ?',
+                         ((off,) if st == 'turned' else (st, off)))
                 return self.send(200, [dict(r) for r in rows])
             if p.startswith('/thumb/'):
                 f = os.path.join(THUMBS, os.path.basename(p) + '.jpg')

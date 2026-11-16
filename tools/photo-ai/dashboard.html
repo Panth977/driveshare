@@ -57,8 +57,7 @@
   <h1>Photo jobs</h1>
   <nav id="nav">
     <button data-v="overview" class="on">Progress</button>
-    <button data-v="ask">Check rotations <span class="n" id="n-ask" hidden></span></button>
-    <button data-v="auto">Turned for you</button>
+    <button data-v="rot">Orientation <span class="n" id="n-ask" hidden></span></button>
     <button data-v="people">People</button>
     <button data-v="same">Same person? <span class="n" id="n-q" hidden></span></button>
   </nav>
@@ -114,32 +113,41 @@ function overview() {
     <h3>Log</h3><div class="card log">${st.log.map((l) => new Date(l.at * 1000).toLocaleTimeString() + '  ' + esc(l.msg)).join('\n') || '—'}</div>`;
 }
 
-// ── rotations ──
+// ── orientation: Review required · Skipped · Turned ──
 const TURN = ['As it is', '↻ 90°', '180°', '↺ 90°'];
-async function rotations(status) {
+let rotTab = 'ask';
+async function rotations() {
+  const status = rotTab;
   const rows = await api(`/api/rot?status=${status}`);
-  if (!rows.length) { $('#main').innerHTML = `<p class="muted">${status === 'ask' ? 'Nothing to check right now. New ones appear as the scan goes on.' : 'Nothing turned yet.'}</p>`; return; }
-  $('#main').innerHTML = `<p class="muted small">${status === 'ask'
-    ? 'Click the one that is the right way up (keys 1–4 for the first photo, S to skip). The highlighted one is the computer’s guess.'
-    : 'These were turned for you (DriveShare shows them turned; the photo itself is untouched). Click “Undo” if one is wrong.'}</p>
+  const r = st?.rot ?? {};
+  const tabs = `<div class="tabs2">
+      <button class="b ${status === 'ask' ? 'p' : ''}" onclick="rotTab='ask';rotations()">Review required · ${fmt(r.ask)}</button>
+      <button class="b ${status === 'skipped' ? 'p' : ''}" onclick="rotTab='skipped';rotations()">Skipped · ${fmt(r.skipped)}</button>
+      <button class="b ${status === 'turned' ? 'p' : ''}" onclick="rotTab='turned';rotations()">Turned · ${fmt(st?.rot_turned)}</button></div>`;
+  const pick = status !== 'turned';
+  const help = { ask: 'Click the one that is the right way up (keys 1–4 for the first photo, S to skip). The highlighted one is the computer’s guess.',
+    skipped: 'Photos you skipped. Pick the right way up whenever you like.',
+    turned: 'Shown turned in DriveShare (turned for you, or by your answer); the photo itself is untouched. “Undo” puts one back as it was.' }[status];
+  if (!rows.length) { $('#main').innerHTML = tabs + `<p class="muted">${status === 'ask' ? 'Nothing to check right now. New ones appear as the scan goes on.' : 'Nothing here.'}</p>`; return; }
+  $('#main').innerHTML = tabs + `<p class="muted small">${help}</p>
     <div class="rot">${rows.map((r) => `<div class="card rotcard" data-id="${r.id}">
-      <div class="small muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(r.name)} · sure ${Math.round(r.p * 100)}%</div>
-      ${status === 'ask'
+      <div class="small muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(r.name)} · ${r.status === 'answered' ? 'your answer' : 'sure ' + Math.round(r.p * 100) + '%'}</div>
+      ${pick
         ? `<div class="opts">${[0, 1, 2, 3].map((k) => `<div class="opt ${k === r.k ? 'guess' : ''}" data-k="${k}"><img src="/thumb/${r.id}" style="transform:rotate(${k * 90}deg)" loading="lazy"><span>${k + 1} · ${TURN[k]}</span></div>`).join('')}</div>
-           <div style="margin-top:8px;display:flex;justify-content:flex-end"><button class="b skip">Skip</button></div>`
+           ${status === 'ask' ? '<div style="margin-top:8px;display:flex;justify-content:flex-end"><button class="b skip">Skip</button></div>' : ''}`
         : `<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px"><div class="opt"><img src="/thumb/${r.id}" loading="lazy"><span>before</span></div><div class="opt"><img src="/thumb/${r.id}" style="transform:rotate(${r.k * 90}deg)" loading="lazy"><span>now</span></div></div>
            <div style="margin-top:8px;display:flex;justify-content:flex-end"><button class="b undo">Undo</button></div>`}
     </div>`).join('')}</div>`;
   document.querySelectorAll('.rotcard').forEach((c) => {
     const id = c.dataset.id;
-    const done = () => { c.remove(); if (!document.querySelector('.rotcard')) rotations(status); };
+    const done = () => { c.remove(); poll(); if (!document.querySelector('.rotcard')) rotations(); };
     c.querySelectorAll('.opt[data-k]').forEach((o) => (o.onclick = () => api('/api/rot/answer', { id, k: +o.dataset.k }).then(done)));
     c.querySelector('.skip')?.addEventListener('click', () => api('/api/rot/answer', { id, k: -1 }).then(done));
     c.querySelector('.undo')?.addEventListener('click', () => api('/api/rot/undo', { id }).then(done));
   });
 }
 addEventListener('keydown', (e) => {
-  if (view !== 'ask' || e.target.tagName === 'INPUT') return;
+  if (view !== 'rot' || rotTab === 'turned' || e.target.tagName === 'INPUT') return;
   const c = document.querySelector('.rotcard'); if (!c) return;
   if ('1234'.includes(e.key)) c.querySelector(`.opt[data-k="${+e.key - 1}"]`)?.click();
   if (e.key === 's' || e.key === 'S') c.querySelector('.skip')?.click();
@@ -196,8 +204,8 @@ async function same() {
 
 function render() {
   if (view === 'overview') return poll();
-  if (view === 'ask') return rotations('ask');
-  if (view === 'auto') return rotations('auto');
+  if (view === 'ask' || view === 'auto') { rotTab = view === 'ask' ? 'ask' : 'turned'; return nav('rot'); }
+  if (view === 'rot') return rotations();
   if (view === 'people') return people();
   if (view === 'same') return same();
 }
