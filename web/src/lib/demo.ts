@@ -105,7 +105,7 @@ export class DemoDrive implements DriveApi {
   async changes() { return { changes: [], next: '1', done: true }; }
   async createFolder(name: string, parent: string) { const f: DFile = { id: id(), name, mimeType: FOLDER_MIME, parents: [parent], modifiedTime: new Date().toISOString(), ownedByMe: true }; this.files.set(f.id, f); return f; }
   // Saves take a moment, like Drive does (and `window.__demoFail = true` makes them fail, for tests).
-  async update(fid: string, patch: { name?: string; trashed?: boolean; starred?: boolean }) { await wait(700); if ((globalThis as { __demoFail?: boolean }).__demoFail) throw new Error('Demo failure'); const f = this.files.get(fid)!; Object.assign(f, patch); noteUpdate(f, patch); return { ...f }; }
+  async update(fid: string, patch: { name?: string; trashed?: boolean; starred?: boolean; appProperties?: Record<string, string | null> }) { await wait(700); if ((globalThis as { __demoFail?: boolean }).__demoFail) throw new Error('Demo failure'); const f = this.files.get(fid)!; Object.assign(f, patch); noteUpdate(f, patch); return { ...f }; }
   async comments(fid: string) { await wait(); return this.comm.get(fid) ?? []; }
   async addComment(fid: string, content: string) { await wait(700); const c = { id: id(), content, createdTime: new Date().toISOString(), author: { displayName: 'You', me: true } }; this.comm.set(fid, [...(this.comm.get(fid) ?? []), c]); return c; }
   async permissions(fid: string) { return this.perms.get(fid) ?? []; }

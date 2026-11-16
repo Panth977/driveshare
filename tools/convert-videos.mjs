@@ -53,7 +53,7 @@ async function getToken() {
     page = browser.pages()[0] ?? (await browser.newPage());
   }
   for (let i = 0; i < 4; i++) {
-    await page.goto(`${SITE}/x?tv=0`).catch(() => {});
+    await page.goto(`${SITE}/drive?tv=0`).catch(() => {}); // /drive starts Drive, which renews the token
     for (let j = 0; j < 30; j++) {
       const t = await page.evaluate(() => JSON.parse(localStorage.getItem('ds.driveToken') ?? 'null')).catch(() => null);
       if (t && t.until > Date.now() + 10 * 60e3) { token = { value: t.value, until: t.until }; return t.value; }

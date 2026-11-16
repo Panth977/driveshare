@@ -65,7 +65,7 @@ export interface DriveApi {
   /** One page of Drive's change feed; `done` when `next` is the token to start from next time. */
   changes(pageToken: string, fields: string): Promise<{ changes: { fileId: string; removed?: boolean; file?: DFile }[]; next: string; done: boolean }>;
   createFolder(name: string, parent: string): Promise<DFile>;
-  update(id: string, patch: { name?: string; trashed?: boolean; starred?: boolean }): Promise<DFile>;
+  update(id: string, patch: { name?: string; trashed?: boolean; starred?: boolean; appProperties?: Record<string, string | null> }): Promise<DFile>;
   comments(id: string): Promise<DComment[]>;
   addComment(id: string, content: string): Promise<DComment>;
   permissions(id: string): Promise<DPermission[]>;
@@ -238,7 +238,7 @@ export class RestDrive implements DriveApi {
     return this.call<DFile>('POST', `${API}/files?fields=${FIELDS}`, { name, mimeType: FOLDER_MIME, parents: [parent] });
   }
 
-  update(id: string, patch: { name?: string; trashed?: boolean; starred?: boolean }) {
+  update(id: string, patch: { name?: string; trashed?: boolean; starred?: boolean; appProperties?: Record<string, string | null> }) {
     return this.call<DFile>('PATCH', `${API}/files/${encodeURIComponent(id)}?fields=${FIELDS}`, patch).then((f) => { noteUpdate(f, patch); return f; });
   }
 
@@ -327,6 +327,17 @@ export class RestDrive implements DriveApi {
     const p = playable(f);
     return `/__media/${encodeURIComponent(p.id)}?size=${p.size}&type=${encodeURIComponent(p.type)}`;
   }
+}
+
+/**
+ * Quarter turns (clockwise) to show a photo the right way up: the dsTurn label the Mac's photo job
+ * (tools/photo-ai) puts on photos stored sideways. The file itself is untouched.
+ */
+export const turnOf = (f: DFile): number => (Number(f.appProperties?.dsTurn) || 0) % 4;
+/** CSS transform for a cover-fitted thumbnail in a box of width/height `ratio` (keeps it covering). */
+export function turnCss(f: DFile, ratio = 1): string {
+  const t = turnOf(f);
+  return t ? `rotate(${t * 90}deg)${t % 2 ? ` scale(${Math.max(ratio, 1 / ratio).toFixed(3)})` : ''}` : '';
 }
 
 /** What to stream for a video: its MP4 copy when it has one (old formats), else the file itself. */

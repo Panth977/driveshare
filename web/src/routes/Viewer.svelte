@@ -9,11 +9,12 @@
   import { toast } from '../lib/toast.svelte.ts';
   import { activity } from '../lib/activity.svelte.ts';
   import { editable, isBack, tv } from '../lib/tv.svelte.ts';
-  import { warmVideo, ago, bytesOf, driveLink, duration, failText, isAudio, isFolder, isImage, isMedia, isPdf, isVideo, kindOf, originalUrl, sortTv, thumb, type DComment, type DFile } from '../lib/gdrive.ts';
+  import { turnCss, turnOf, warmVideo, ago, bytesOf, driveLink, duration, failText, isAudio, isFolder, isImage, isMedia, isPdf, isVideo, kindOf, originalUrl, sortTv, thumb, type DComment, type DFile } from '../lib/gdrive.ts';
   import { children as cacheChildren, folderMeta, noteUpdate, peek } from '../lib/listcache.ts';
   import { follow, sendToTv } from '../lib/remote.svelte.ts';
   import { profiles } from '../lib/profiles.svelte.ts';
   import { rotateBlob } from '../lib/rotate.ts';
+  import { namesIn } from '../lib/people.ts';
   import { noteFolder } from '../lib/recent.ts';
   import { sendFile } from '../lib/upload.ts';
   import FileIcon from '../components/drive/FileIcon.svelte';
@@ -57,6 +58,14 @@
   const videoId = $derived(cur && isVideo(cur) ? cur.id : '');
   // Its first and last bytes are fetched during that second (media-sw.js).
   const curId = $derived(cur?.id ?? '');
+  // Who is in it (named on the Mac's photo job; see lib/people.ts).
+  let names = $state<string[]>([]);
+  $effect(() => {
+    const c = untrack(() => cur), d = drive;
+    names = [];
+    if (!curId || !c || !d || !c.appProperties?.dsFaces) return;
+    void namesIn(d, c).then((n) => { if (cur?.id === c.id) names = n; });
+  });
   $effect(() => {
     if (!curId) return;
     const c = untrack(() => cur);
@@ -395,12 +404,16 @@
     if (!t || !drive) return Promise.resolve();
     let out: Blob | null = null;
     return activity.run(`Rotate ${f.name}`, async () => {
-      const src = lastSaved.get(f.id) ?? (await drive!.download(f));
-      out = await rotateBlob(src, f.mimeType, t);
+      const had = lastSaved.get(f.id);
+      // A dsTurn label (turned by the photo job, file untouched) goes into the file with these turns.
+      const base = had ? 0 : turnOf(all?.find((x) => x.id === f.id) ?? f);
+      const src = had ?? (await drive!.download(f));
+      out = await rotateBlob(src, f.mimeType, (t + base) % 4);
       const meta = { name: f.name, parents: f.parents ?? [], mimeType: f.mimeType };
       let saved: Partial<DFile> = {};
       if (out.size <= 5 * 1024 * 1024) saved = await drive!.uploadSmall(meta, out, f.id);
       else { const url = await drive!.startUpload(meta, out.size, f.id); await sendFile(url, out, () => {}); saved = await drive!.get(f.id); }
+      if (base) saved = { ...saved, appProperties: (await drive!.update(f.id, { appProperties: { dsTurn: null } })).appProperties ?? {} };
       lastSaved.set(f.id, out);
       const old = full[f.id];
       if (old?.startsWith('blob:')) URL.revokeObjectURL(old);
@@ -445,7 +458,7 @@
   });
   let drag: { x: number; y: number; px: number; py: number } | null = null;
   function picStyle(f: DFile): string {
-    const t = turns[f.id] ?? 0;
+    const t = (turnOf(f) + (turns[f.id] ?? 0)) % 4;
     const tf = `translate(${panX}px, ${panY}px) scale(${zoom}) rotate(${t * 90}deg)`;
     // A quarter turn: lay the picture out in a box with width and height swapped, then turn it.
     const box = t % 2 && stageW && stageH ? `width:${stageH}px;height:${stageW}px;left:${(stageW - stageH) / 2}px;top:${(stageH - stageW) / 2}px;right:auto;bottom:auto;` : '';
@@ -673,7 +686,7 @@
       </button>
       <div class="ttl">
         <div class="ellipsis nm">{cur?.name ?? ''}{#if cur?.starred} <span class="star">★</span>{/if}</div>
-        {#if list}<div class="tiny muted num">{list.length ? index + 1 : 0} of {list.length}{cur ? ` · ${kindOf(cur)} · ${formatBytes(bytesOf(cur))}` : ''}</div>{/if}
+        {#if list}<div class="tiny muted num">{list.length ? index + 1 : 0} of {list.length}{cur ? ` · ${kindOf(cur)} · ${formatBytes(bytesOf(cur))}` : ''}{names.length ? ` · ${names.join(', ')}` : ''}</div>{/if}
       </div>
       <div class="acts">
         <label class="tog small"><input type="checkbox" bind:checked={onlyMedia} /> Photos & videos only</label>
@@ -753,7 +766,7 @@
       <div class="strip" data-chrome data-nav-skip bind:clientHeight={stripH}>
         {#each strip as { f, i } (f.id)}
           <button class:on={i === index} tabindex="-1" onclick={() => go(i)} aria-label={f.name}>
-            {#if thumb(f, 160)}<img src={thumb(f, 160)} alt="" loading="lazy" referrerpolicy="no-referrer" />{:else}<FileIcon file={f} size={1.6} />{/if}
+            {#if thumb(f, 160)}<img src={thumb(f, 160)} style:transform={turnCss(f, 4.2 / 3.1)} alt="" loading="lazy" referrerpolicy="no-referrer" />{:else}<FileIcon file={f} size={1.6} />{/if}
             {#if isVideo(f)}<span class="pl">▶</span>{/if}
           </button>
         {/each}

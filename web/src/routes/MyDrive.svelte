@@ -11,7 +11,7 @@
   import { toast } from '../lib/toast.svelte.ts';
   import { nav } from '../lib/router.svelte.ts';
   import { editable, isBack, tv } from '../lib/tv.svelte.ts';
-  import { ago, bytesOf, driveLink, duration, failText, isFolder, isMedia, kindOf, thumb, type DFile } from '../lib/gdrive.ts';
+  import { turnCss, ago, bytesOf, driveLink, duration, failText, isFolder, isMedia, kindOf, thumb, type DFile } from '../lib/gdrive.ts';
   import { children as cacheChildren, remember } from '../lib/listcache.ts';
   import { linked } from '../lib/linked.svelte.ts';
   import FileIcon from '../components/drive/FileIcon.svelte';
@@ -553,7 +553,7 @@
               onkeydown={(e) => pressStart(e, f)} onkeyup={pressEnd}
               oncontextmenu={(e) => { e.preventDefault(); e.stopPropagation(); menuFor(f, e.clientX, e.clientY); }}>
               <div class="art" class:media={isMedia(f)}>
-                {#if !isFolder(f) && thumb(f, 480)}<img src={thumb(f, 480)} alt="" loading="lazy" referrerpolicy="no-referrer" />{:else}<FileIcon file={f} size={3.2} shared={f.shared} />{/if}
+                {#if !isFolder(f) && thumb(f, 480)}<img src={thumb(f, 480)} style:transform={turnCss(f, 4 / 3)} alt="" loading="lazy" referrerpolicy="no-referrer" />{:else}<FileIcon file={f} size={3.2} shared={f.shared} />{/if}
                 {#if f.videoMediaMetadata}<span class="dur">{duration(f.videoMediaMetadata.durationMillis)}</span>{/if}
                 {#if f.starred}<span class="star tl">★</span>{/if}
               </div>

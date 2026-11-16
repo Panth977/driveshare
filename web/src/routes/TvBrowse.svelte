@@ -16,7 +16,7 @@
   import { toast } from '../lib/toast.svelte.ts';
   import { isBack, tv, inTvApp } from '../lib/tv.svelte.ts';
   import { children as cachedChildren, folderMeta, peek } from '../lib/listcache.ts';
-  import { ago, bytesOf, duration, failText, isFolder, isVideo, kindOf, sortTv, thumb, type DFile } from '../lib/gdrive.ts';
+  import { turnCss, ago, bytesOf, duration, failText, isFolder, isVideo, kindOf, sortTv, thumb, type DFile } from '../lib/gdrive.ts';
   import FileIcon from '../components/drive/FileIcon.svelte';
   import ShareDialog from '../components/drive/ShareDialog.svelte';
   import Prompt from '../components/drive/Prompt.svelte';
@@ -249,7 +249,7 @@
           oncontextmenu={(e) => { e.preventDefault(); menuFor = f; }}>
           <div class="art" class:folder={isFolder(f) && !r?.file}>
             {#if r?.file && !noThumb[r.file.id] && thumb(r.file as DFile, 520)}<img src={thumb(r.file as DFile, 520)} alt="" loading="lazy" referrerpolicy="no-referrer" onerror={() => (noThumb = { ...noThumb, [r.file!.id]: true })} /><span class="badge">▶ Carry on</span>
-            {:else if !isFolder(f) && !noThumb[f.id] && thumb(f, 520)}<img src={thumb(f, 520)} alt="" loading="lazy" referrerpolicy="no-referrer" onerror={() => (noThumb = { ...noThumb, [f.id]: true })} />
+            {:else if !isFolder(f) && !noThumb[f.id] && thumb(f, 520)}<img src={thumb(f, 520)} style:transform={turnCss(f, 1.6)} alt="" loading="lazy" referrerpolicy="no-referrer" onerror={() => (noThumb = { ...noThumb, [f.id]: true })} />
             {:else}<FileIcon file={f} size={4} shared={f.shared} />{/if}
             {#if isVideo(f)}<span class="badge">▶ {duration(f.videoMediaMetadata?.durationMillis)}</span>{/if}
             {#if f.starred}<span class="star">★</span>{/if}

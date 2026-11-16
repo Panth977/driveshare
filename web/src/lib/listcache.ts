@@ -39,7 +39,7 @@ export const peek = (id: string, opts: { orderBy?: string } = {}): DFile[] | und
 /** Folder details seen lately (name, parents), so the viewer does not ask Drive each time. */
 export const folderMeta = new Map<string, DFile>();
 
-const sig = (l: DFile[]) => l.map((f) => `${f.id}:${f.name}:${f.modifiedTime}:${f.starred ? 1 : 0}:${f.appProperties?.dsPlay ?? ''}`).join('|');
+const sig = (l: DFile[]) => l.map((f) => `${f.id}:${f.name}:${f.modifiedTime}:${f.starred ? 1 : 0}:${JSON.stringify(f.appProperties ?? {})}`).join('|');
 
 /**
  * Children of a folder: the cached copy right away (if any), then `onFresh` with Drive's answer
@@ -72,10 +72,17 @@ export async function forget(id: string): Promise<void> {
 }
 
 /** A file changed (binned, starred, renamed): keep the in-memory listings that show it right. */
-export function noteUpdate(f: DFile, patch: Partial<DFile>): void {
+export function noteUpdate(f: DFile, patch: Omit<Partial<DFile>, 'appProperties'> & { appProperties?: Record<string, string | null> }): void {
+  const merge = (x: DFile): DFile => {
+    const { appProperties: ap, ...rest } = patch;
+    if (!ap) return { ...x, ...rest };
+    const props: Record<string, string> = { ...(x.appProperties ?? {}) };
+    for (const [k, v] of Object.entries(ap)) { if (v == null) delete props[k]; else props[k] = v; }
+    return { ...x, ...rest, appProperties: props };
+  };
   for (const [k, l] of memo) {
     if (!l.some((x) => x.id === f.id)) continue;
-    memo.set(k, patch.trashed ? l.filter((x) => x.id !== f.id) : l.map((x) => (x.id === f.id ? { ...x, ...patch } : x)));
+    memo.set(k, patch.trashed ? l.filter((x) => x.id !== f.id) : l.map((x) => (x.id === f.id ? merge(x) : x)));
   }
   // Back from the bin: its folder's listing is asked again next time.
   if (patch.trashed === false) for (const p of f.parents ?? []) for (const k of [...memo.keys()]) if (k === p || k.startsWith(`${p}|`)) memo.delete(k);

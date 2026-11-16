@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DriveShare · photo jobs</title>
+<style>
+  :root { --bg:#0e1116; --card:#161b22; --line:#262d36; --ink:#e8edf3; --muted:#8b96a5; --acc:#7c9cff; --ok:#4fd1a1; --warn:#f5b454; --bad:#ff7b9c; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { position: sticky; top: 0; z-index: 5; display:flex; gap: 6px; align-items:center; padding: 12px 20px; background: rgb(14 17 22 / .95); border-bottom:1px solid var(--line); }
+  header h1 { font-size: 17px; margin: 0 16px 0 0; }
+  nav button { background: none; border: 0; color: var(--muted); padding: 7px 12px; border-radius: 8px; font: inherit; cursor: pointer; }
+  nav button.on { background: var(--card); color: var(--ink); }
+  nav .n { display:inline-block; min-width: 20px; padding: 0 6px; margin-left: 4px; border-radius: 99px; background: var(--acc); color: #0b0e12; font-size: 12px; font-weight: 700; }
+  main { padding: 20px; max-width: 1200px; margin: 0 auto; }
+  .grid { display:grid; gap:12px; grid-template-columns: repeat(auto-fill, minmax(230px,1fr)); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px 16px; }
+  .big { font-size: 26px; font-weight: 700; letter-spacing:-.02em; }
+  .muted { color: var(--muted); } .small { font-size: 13px; }
+  .bar { height: 8px; background: #0b0e12; border-radius: 99px; overflow: hidden; margin: 8px 0 4px; }
+  .bar > div { height: 100%; background: var(--acc); transition: width .4s; }
+  .job { display:flex; align-items:center; gap: 12px; }
+  .job .grow { flex:1; }
+  button.b { background: var(--card); color: var(--ink); border:1px solid var(--line); border-radius: 9px; padding: 7px 14px; font: inherit; cursor: pointer; }
+  button.b:hover { border-color: var(--acc); }
+  button.p { background: var(--acc); color:#0b0e12; border-color: var(--acc); font-weight: 600; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display:inline-block; }
+  .running { background: var(--ok); } .paused { background: var(--warn); } .idle { background: var(--muted); }
+  .log { font: 12px/1.6 ui-monospace, Menlo, monospace; color: var(--muted); white-space: pre-wrap; }
+  .rot { display:grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
+  .rotcard .opts { display:grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 8px; }
+  .opt { aspect-ratio: 1; background:#0b0e12; border:2px solid var(--line); border-radius: 10px; display:grid; place-items:center; overflow:hidden; cursor:pointer; position: relative; }
+  .opt:hover, .opt.guess { border-color: var(--acc); }
+  .opt img { max-width: 92%; max-height: 92%; }
+  .opt span { position:absolute; bottom: 3px; right: 6px; font-size: 11px; color: var(--muted); }
+  .people { display:grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+  .faces { display:flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
+  .faces img { width: 52px; height: 52px; border-radius: 8px; object-fit: cover; cursor: pointer; }
+  .faces img:hover { outline: 2px solid var(--bad); }
+  input.name { width: 100%; background:#0b0e12; color: var(--ink); border:1px solid var(--line); border-radius: 8px; padding: 7px 10px; font: inherit; }
+  .q { display:grid; grid-template-columns: 1fr auto 1fr; gap: 20px; align-items: center; }
+  .q .faces img { width: 96px; height: 96px; }
+  .q .side h3 { margin: 0; }
+  .center { text-align: center; }
+  .pill { display:inline-block; padding: 1px 8px; border-radius: 99px; font-size: 12px; background: #0b0e12; border:1px solid var(--line); color: var(--muted); }
+  .tabs2 { display:flex; gap: 6px; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Photo jobs</h1>
+  <nav id="nav">
+    <button data-v="overview" class="on">Progress</button>
+    <button data-v="ask">Check rotations <span class="n" id="n-ask" hidden></span></button>
+    <button data-v="auto">Turned for you</button>
+    <button data-v="people">People</button>
+    <button data-v="same">Same person? <span class="n" id="n-q" hidden></span></button>
+  </nav>
+</header>
+<main id="main"></main>
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const api = (p, body) => fetch(p, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}).then((r) => r.json());
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+let view = location.hash.slice(1) || 'overview', st = null;
+const fmt = (n) => (n ?? 0).toLocaleString();
+
+function nav(v) { view = v; location.hash = v; document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('on', b.dataset.v === v)); render(); }
+document.querySelectorAll('#nav button').forEach((b) => (b.onclick = () => nav(b.dataset.v)));
+
+async function poll() {
+  try { st = await api('/api/status'); } catch { st = null; }
+  const ask = st?.rot?.ask ?? 0;
+  $('#n-ask').hidden = !ask; $('#n-ask').textContent = fmt(ask);
+  $('#n-q').hidden = !st?.questions; $('#n-q').textContent = fmt(st?.questions);
+  if (view === 'overview') overview();
+}
+setInterval(poll, 3000);
+
+function job(name, title, detail) {
+  const s = st.jobs[name];
+  const btn = name === 'group'
+    ? `<button class="b" onclick="api('/api/job',{job:'group',action:'run'}).then(poll)">${s === 'running' ? 'Grouping…' : 'Group now'}</button>`
+    : `<button class="b ${s === 'paused' ? 'p' : ''}" onclick="api('/api/job',{job:'${name}',action:'${s === 'paused' ? 'play' : 'pause'}'}).then(poll)">${s === 'paused' ? '▶ Play' : '❚❚ Pause'}</button>`;
+  return `<div class="card job"><span class="dot ${s}"></span><div class="grow"><b>${title}</b> <span class="pill">${esc(st.stage[name])}</span><div class="muted small">${detail}</div></div>${btn}</div>`;
+}
+
+function overview() {
+  if (!st) { $('#main').innerHTML = '<p class="muted">Not reachable. Is the engine running?</p>'; return; }
+  const pct = st.photos ? Math.round((st.done / st.photos) * 1000) / 10 : 0;
+  const r = st.rot;
+  $('#main').innerHTML = `
+    <div class="grid">
+      <div class="card"><div class="muted">Photos looked at</div><div class="big">${fmt(st.done)} <span class="muted small">of ${fmt(st.photos)}</span></div>
+        <div class="bar"><div style="width:${pct}%"></div></div>
+        <div class="muted small">${pct}% · ${st.rate}/s${st.eta_min != null ? ` · about ${st.eta_min > 90 ? Math.round(st.eta_min / 60) + ' h' : st.eta_min + ' min'} left` : ''}${st.errors ? ` · ${fmt(st.errors)} could not be read` : ''}</div></div>
+      <div class="card"><div class="muted">Rotation (Share TB, ${fmt(st.share)} photos)</div><div class="big">${fmt((r.auto ?? 0) + (r.answered ?? 0))} <span class="muted small">turned</span></div>
+        <div class="muted small">${fmt(r.upright)} already upright · ${fmt(r.auto)} turned for you · <a href="#ask" onclick="nav('ask')">${fmt(r.ask)} to check</a> · ${fmt(r.answered)} you answered · ${fmt(st.rot_written)} labels in Drive</div></div>
+      <div class="card"><div class="muted">Faces</div><div class="big">${fmt(st.faces)}</div>
+        <div class="muted small">in ${fmt(st.with_faces)} photos · ${fmt(st.people)} people (${fmt(st.named)} named) · ${fmt(st.face_labels)} photos labelled in Drive</div></div>
+    </div>
+    <h3>Jobs</h3>
+    <div style="display:grid;gap:10px">
+      ${job('scan', 'Look at photos', 'Fetches the small copy of each photo, checks which way is up and finds faces.' + (st.stage.list ? ' · ' + esc(st.stage.list) : ''))}
+      ${job('group', 'Group faces into people', st.grouped_at ? 'Last grouped ' + new Date(st.grouped_at * 1000).toLocaleString() + '. Runs by itself when the scan ends; run it now to see people sooner.' : 'Runs by itself when the scan ends; run it now to see people sooner.')}
+      ${job('write', 'Write labels to Drive', 'Rotation labels (dsTurn) and face labels (dsFaces) on each photo, plus the face index files. Never changes a photo’s date.')}
+    </div>
+    <h3>Log</h3><div class="card log">${st.log.map((l) => new Date(l.at * 1000).toLocaleTimeString() + '  ' + esc(l.msg)).join('\n') || '—'}</div>`;
+}
+
+// ── rotations ──
+const TURN = ['As it is', '↻ 90°', '180°', '↺ 90°'];
+async function rotations(status) {
+  const rows = await api(`/api/rot?status=${status}`);
+  if (!rows.length) { $('#main').innerHTML = `<p class="muted">${status === 'ask' ? 'Nothing to check right now. New ones appear as the scan goes on.' : 'Nothing turned yet.'}</p>`; return; }
+  $('#main').innerHTML = `<p class="muted small">${status === 'ask'
+    ? 'Click the one that is the right way up (keys 1–4 for the first photo, S to skip). The highlighted one is the computer’s guess.'
+    : 'These were turned for you (DriveShare shows them turned; the photo itself is untouched). Click “Undo” if one is wrong.'}</p>
+    <div class="rot">${rows.map((r) => `<div class="card rotcard" data-id="${r.id}">
+      <div class="small muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(r.name)} · sure ${Math.round(r.p * 100)}%</div>
+      ${status === 'ask'
+        ? `<div class="opts">${[0, 1, 2, 3].map((k) => `<div class="opt ${k === r.k ? 'guess' : ''}" data-k="${k}"><img src="/thumb/${r.id}" style="transform:rotate(${k * 90}deg)" loading="lazy"><span>${k + 1} · ${TURN[k]}</span></div>`).join('')}</div>
+           <div style="margin-top:8px;display:flex;justify-content:flex-end"><button class="b skip">Skip</button></div>`
+        : `<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px"><div class="opt"><img src="/thumb/${r.id}" loading="lazy"><span>before</span></div><div class="opt"><img src="/thumb/${r.id}" style="transform:rotate(${r.k * 90}deg)" loading="lazy"><span>now</span></div></div>
+           <div style="margin-top:8px;display:flex;justify-content:flex-end"><button class="b undo">Undo</button></div>`}
+    </div>`).join('')}</div>`;
+  document.querySelectorAll('.rotcard').forEach((c) => {
+    const id = c.dataset.id;
+    const done = () => { c.remove(); if (!document.querySelector('.rotcard')) rotations(status); };
+    c.querySelectorAll('.opt[data-k]').forEach((o) => (o.onclick = () => api('/api/rot/answer', { id, k: +o.dataset.k }).then(done)));
+    c.querySelector('.skip')?.addEventListener('click', () => api('/api/rot/answer', { id, k: -1 }).then(done));
+    c.querySelector('.undo')?.addEventListener('click', () => api('/api/rot/undo', { id }).then(done));
+  });
+}
+addEventListener('keydown', (e) => {
+  if (view !== 'ask' || e.target.tagName === 'INPUT') return;
+  const c = document.querySelector('.rotcard'); if (!c) return;
+  if ('1234'.includes(e.key)) c.querySelector(`.opt[data-k="${+e.key - 1}"]`)?.click();
+  if (e.key === 's' || e.key === 'S') c.querySelector('.skip')?.click();
+});
+
+// ── people ──
+let peopleTab = '0';
+async function people() {
+  const rows = await api(`/api/people?named=${peopleTab}`);
+  const names = await api('/api/names');
+  $('#main').innerHTML = `<div class="tabs2">
+      <button class="b ${peopleTab === '0' ? 'p' : ''}" onclick="peopleTab='0';people()">Not named yet</button>
+      <button class="b ${peopleTab === '1' ? 'p' : ''}" onclick="peopleTab='1';people()">Named</button></div>
+    <p class="muted small">Type a name and press Enter. Giving two groups the same name joins them. Click a face that is not this person to take it out.</p>
+    <datalist id="names">${names.map((n) => `<option value="${esc(n)}">`).join('')}</datalist>
+    ${rows.length ? '' : `<p class="muted">${st && !st.grouped_at ? 'No groups yet: they appear after the first grouping (Progress → Group now).' : 'Nobody here.'}</p>`}
+    <div class="people">${rows.map((p) => `<div class="card" data-pid="${p.pid}">
+      <div class="small muted">${fmt(p.n)} photos</div>
+      <div class="faces">${p.sample.map((f) => `<img src="/face/${f}" data-fid="${f}" alt="" title="Not this person" onerror="this.remove()">`).join('')}</div>
+      <input class="name" list="names" placeholder="Who is this?" value="${esc(p.name)}">
+      <div style="margin-top:6px;text-align:right"><button class="b hide small">Not a person / ignore</button></div></div>`).join('')}</div>`;
+  document.querySelectorAll('.people .card').forEach((c) => {
+    const pid = +c.dataset.pid;
+    const inp = c.querySelector('input');
+    inp.onkeydown = (e) => { if (e.key === 'Enter') api('/api/people/name', { pid, name: inp.value }).then(() => { inp.blur(); if (peopleTab === '0' && inp.value.trim()) c.remove(); }); };
+    c.querySelectorAll('.faces img').forEach((im) => (im.onclick = () => api('/api/face/remove', { fid: +im.dataset.fid }).then(() => im.remove())));
+    c.querySelector('.hide').onclick = () => api('/api/people/hide', { pid }).then(() => c.remove());
+  });
+}
+
+// ── same person? ──
+async function same() {
+  const q = await api('/api/question');
+  if (!q) { $('#main').innerHTML = '<p class="muted">No questions right now. They come after a grouping.</p>'; return; }
+  const side = (p) => `<div class="side card"><h3>${esc(p.name) || '<span class="muted">No name</span>'}</h3><div class="muted small">${fmt(p.n)} photos</div><div class="faces">${p.faces.map((f) => `<img src="/face/${f}">`).join('')}</div></div>`;
+  $('#main').innerHTML = `<p class="muted small">${fmt(q.left)} to go · Y = same person, N = different, S = skip</p>
+    <div class="q">${side(q.a)}<div class="center"><div class="muted small">look alike ${Math.round(q.sim * 100)}%</div>
+      <div style="display:grid;gap:8px;margin-top:10px"><button class="b p" id="y">Same person (Y)</button><button class="b" id="n">Different (N)</button><button class="b" id="s">Skip (S)</button></div></div>${side(q.b)}</div>`;
+  const ans = (same) => api('/api/question/answer', { a: q.a.pid, b: q.b.pid, same }).then(same_);
+  const same_ = () => same();
+  $('#y').onclick = () => ans(true); $('#n').onclick = () => ans(false);
+  $('#s').onclick = () => api('/api/question/answer', { a: q.a.pid, b: q.b.pid, same: false, skip: true }).then(same_);
+}
+addEventListener('keydown', (e) => {
+  if (view !== 'same' || e.target.tagName === 'INPUT') return;
+  if (e.key === 'y' || e.key === 'Y') $('#y')?.click();
+  if (e.key === 'n' || e.key === 'N') $('#n')?.click();
+  if (e.key === 's' || e.key === 'S') $('#s')?.click();
+});
+
+function render() {
+  if (view === 'overview') return poll();
+  if (view === 'ask') return rotations('ask');
+  if (view === 'auto') return rotations('auto');
+  if (view === 'people') return people();
+  if (view === 'same') return same();
+}
+addEventListener('hashchange', () => { const v = location.hash.slice(1); if (v && v !== view) nav(v); });
+nav(view);
+</script>
+</body>
+</html>
