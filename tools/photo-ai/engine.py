@@ -556,7 +556,8 @@ class H(BaseHTTPRequestHandler):
             if p == '/api/people':
                 off = int(a.get('offset', 0)); named = a.get('named')
                 where = "name IS NOT NULL AND name!=''" if named == '1' else ("(name IS NULL OR name='')" if named == '0' else '1')
-                rows = q(f'SELECT pid, name, n, cover FROM people WHERE n>0 AND hidden=0 AND {where} ORDER BY n DESC LIMIT 48 OFFSET ?', (off,))
+                hid = 1 if named == 'hidden' else 0   # the "Ignored" tab: groups set aside as not a person
+                rows = q(f'SELECT pid, name, n, cover FROM people WHERE n>0 AND hidden=? AND {where} ORDER BY n DESC LIMIT 48 OFFSET ?', (hid, off))
                 out = []
                 for r in rows:
                     sample = [x['fid'] for x in q('SELECT fid FROM faces WHERE person=? ORDER BY score DESC LIMIT 8', (r['pid'],))]
@@ -619,9 +620,12 @@ class H(BaseHTTPRequestHandler):
                 other = q('SELECT pid FROM people WHERE name=? AND pid!=?', (name, pid), one=True) if name else None
                 if other: merge(other['pid'], pid)   # same name = same person
                 else:
-                    q('UPDATE people SET name=? WHERE pid=?', (name or None, pid))
+                    q('UPDATE people SET name=?, hidden=CASE WHEN ? THEN 0 ELSE hidden END WHERE pid=?', (name or None, bool(name), pid))   # naming an ignored group brings it back
                     q('UPDATE faces SET locked=1 WHERE person=?', (pid,)); q('UPDATE shards SET dirty=1')
                 return self.send(200, {'ok': True, 'merged': bool(other)})
+            if p == '/api/people/unhide':
+                q('UPDATE people SET hidden=0 WHERE pid=?', (int(b['pid']),)); q('UPDATE shards SET dirty=1')
+                return self.send(200, {'ok': True})
             if p == '/api/people/hide':
                 q('UPDATE people SET hidden=1 WHERE pid=?', (int(b['pid']),)); q('UPDATE shards SET dirty=1')
                 return self.send(200, {'ok': True})

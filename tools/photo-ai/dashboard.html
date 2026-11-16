@@ -152,7 +152,8 @@ async function people() {
   const names = await api('/api/names');
   $('#main').innerHTML = `<div class="tabs2">
       <button class="b ${peopleTab === '0' ? 'p' : ''}" onclick="peopleTab='0';people()">Not named yet</button>
-      <button class="b ${peopleTab === '1' ? 'p' : ''}" onclick="peopleTab='1';people()">Named</button></div>
+      <button class="b ${peopleTab === '1' ? 'p' : ''}" onclick="peopleTab='1';people()">Named</button>
+      <button class="b ${peopleTab === 'hidden' ? 'p' : ''}" onclick="peopleTab='hidden';people()">Ignored (not a person)</button></div>
     <p class="muted small">Type a name and press Enter. Giving two groups the same name joins them. Click a face that is not this person to take it out.</p>
     <datalist id="names">${names.map((n) => `<option value="${esc(n)}">`).join('')}</datalist>
     ${rows.length ? '' : `<p class="muted">${st && !st.grouped_at ? 'No groups yet: they appear after the first grouping (Progress → Group now).' : 'Nobody here.'}</p>`}
@@ -160,13 +161,13 @@ async function people() {
       <div class="small muted">${fmt(p.n)} photos</div>
       <div class="faces">${p.sample.map((f) => `<img src="/face/${f}" data-fid="${f}" alt="" title="Not this person" onerror="this.remove()">`).join('')}</div>
       <input class="name" list="names" placeholder="Who is this?" value="${esc(p.name)}">
-      <div style="margin-top:6px;text-align:right"><button class="b hide small">Not a person / ignore</button></div></div>`).join('')}</div>`;
+      <div style="margin-top:6px;text-align:right">${peopleTab === 'hidden' ? '<button class="b p hide small">Restore: it is a person</button>' : '<button class="b hide small">Not a person / ignore</button>'}</div></div>`).join('')}</div>`;
   document.querySelectorAll('.people .card').forEach((c) => {
     const pid = +c.dataset.pid;
     const inp = c.querySelector('input');
-    inp.onkeydown = (e) => { if (e.key === 'Enter') api('/api/people/name', { pid, name: inp.value }).then(() => { inp.blur(); if (peopleTab === '0' && inp.value.trim()) c.remove(); }); };
+    inp.onkeydown = (e) => { if (e.key === 'Enter') api('/api/people/name', { pid, name: inp.value }).then(() => { inp.blur(); if ((peopleTab === '0' || peopleTab === 'hidden') && inp.value.trim()) c.remove(); }); };
     c.querySelectorAll('.faces img').forEach((im) => (im.onclick = () => api('/api/face/remove', { fid: +im.dataset.fid }).then(() => im.remove())));
-    c.querySelector('.hide').onclick = () => api('/api/people/hide', { pid }).then(() => c.remove());
+    c.querySelector('.hide').onclick = () => api(peopleTab === 'hidden' ? '/api/people/unhide' : '/api/people/hide', { pid }).then(() => c.remove());
   });
 }
 
