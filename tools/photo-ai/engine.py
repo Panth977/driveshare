@@ -441,6 +441,17 @@ def build_questions():
     out.sort(reverse=True)
     QUESTIONS[:] = out[:500]
 
+def live_questions():
+    """QUESTIONS minus pairs whose people are gone (regrouped away, merged, ignored or emptied); prunes in place."""
+    ok = {r['pid'] for r in q('SELECT pid FROM people WHERE n>0 AND hidden=0')}
+    seen, out = set(), []
+    for s_, x, y in list(QUESTIONS):
+        key = frozenset((x, y))
+        if x != y and x in ok and y in ok and key not in seen:
+            seen.add(key); out.append((s_, x, y))
+    QUESTIONS[:] = out
+    return out
+
 def group_loop():
     while True:
         # Group again every ~15,000 new faces, so people show up while the scan goes on.
@@ -525,7 +536,9 @@ def status():
         'rot_turned': c("SELECT COUNT(*) FROM rot WHERE status IN ('auto','answered') AND COALESCE(answer, k) != 0"),
         'faces': c('SELECT COUNT(*) FROM faces'), 'with_faces': c('SELECT COUNT(DISTINCT photo) FROM faces'),
         'people': c('SELECT COUNT(*) FROM people WHERE n>0'), 'named': c("SELECT COUNT(*) FROM people WHERE name IS NOT NULL AND name!=''"),
-        'questions': len(QUESTIONS), 'face_labels': c('SELECT COUNT(*) FROM photos WHERE faces_label IS NOT NULL'),
+        'questions': len(live_questions()),
+        'people_tabs': {k: c(f'SELECT COUNT(*) FROM people WHERE n>0 AND {w}') for k, w in (
+            ('0', "hidden=0 AND (name IS NULL OR name='')"), ('1', "hidden=0 AND name IS NOT NULL AND name!=''"), ('hidden', 'hidden=1'))}, 'face_labels': c('SELECT COUNT(*) FROM photos WHERE faces_label IS NOT NULL'),
         'grouped_at': kv('groupedAt'),
         'log': [dict(r) for r in q('SELECT at, msg FROM log ORDER BY at DESC LIMIT 12')],
     }
@@ -556,11 +569,11 @@ class H(BaseHTTPRequestHandler):
             if p == '/': return self.send(200, open(os.path.join(os.path.dirname(__file__), 'dashboard.html'), 'rb').read(), 'text/html; charset=utf-8')
             if p == '/api/status': return self.send(200, status())
             if p == '/api/rot':
-                st = a.get('status', 'ask'); off = int(a.get('offset', 0))
+                st = a.get('status', 'ask'); off = int(a.get('offset', 0)); lim = min(int(a.get('limit', 30)), 200)
                 # "turned": every photo shown turned now (turned for you, or by your answer).
                 where = "status IN ('auto','answered') AND COALESCE(answer, k) != 0" if st == 'turned' else 'status=?'
-                rows = q(f'SELECT rot.id, COALESCE(answer, k) AS k, k_model, p, status, answer, photos.name FROM rot JOIN photos USING(id) WHERE {where} ORDER BY at DESC LIMIT 30 OFFSET ?',
-                         ((off,) if st == 'turned' else (st, off)))
+                rows = q(f'SELECT rot.id, COALESCE(answer, k) AS k, k_model, p, status, answer, photos.name FROM rot JOIN photos USING(id) WHERE {where} ORDER BY at DESC, rot.id LIMIT ? OFFSET ?',
+                         ((lim, off) if st == 'turned' else (st, lim, off)))
                 return self.send(200, [dict(r) for r in rows])
             if p.startswith('/thumb/'):
                 f = os.path.join(THUMBS, os.path.basename(p) + '.jpg')
@@ -569,10 +582,10 @@ class H(BaseHTTPRequestHandler):
                 r = q('SELECT crop FROM faces WHERE fid=?', (int(os.path.basename(p)),), one=True)
                 return self.send(200, r['crop'], 'image/jpeg') if r else self.send(404, {})
             if p == '/api/people':
-                off = int(a.get('offset', 0)); named = a.get('named')
+                off = int(a.get('offset', 0)); lim = min(int(a.get('limit', 48)), 200); named = a.get('named')
                 where = "name IS NOT NULL AND name!=''" if named == '1' else ("(name IS NULL OR name='')" if named == '0' else '1')
                 hid = 1 if named == 'hidden' else 0   # the "Ignored" tab: groups set aside as not a person
-                rows = q(f'SELECT pid, name, n, cover FROM people WHERE n>0 AND hidden=? AND {where} ORDER BY n DESC LIMIT 48 OFFSET ?', (hid, off))
+                rows = q(f'SELECT pid, name, n, cover FROM people WHERE n>0 AND hidden=? AND {where} ORDER BY n DESC, pid LIMIT ? OFFSET ?', (hid, lim, off))
                 out = []
                 for r in rows:
                     sample = [x['fid'] for x in q('SELECT fid FROM faces WHERE person=? ORDER BY score DESC LIMIT 8', (r['pid'],))]
@@ -584,17 +597,12 @@ class H(BaseHTTPRequestHandler):
                 return self.send(200, [dict(r) for r in rows])
             if p == '/api/questions':
                 off, lim = int(a.get('offset', 0)), int(a.get('limit', 60))
-                out, seen = [], 0
                 def side(pid):
                     r = q('SELECT pid,name,n FROM people WHERE pid=?', (pid,), one=True)
-                    return r and {**dict(r), 'faces': [x['fid'] for x in q('SELECT fid FROM faces WHERE person=? ORDER BY score DESC LIMIT 4', (pid,))]}
-                for s_, x, y in list(QUESTIONS):
-                    sx, sy = side(x), side(y)
-                    if not (sx and sy): continue
-                    if seen >= off: out.append({'sim': s_, 'a': sx, 'b': sy})
-                    seen += 1
-                    if len(out) >= lim: break
-                return self.send(200, {'total': len(QUESTIONS), 'items': out})
+                    return {**dict(r), 'faces': [x['fid'] for x in q('SELECT fid FROM faces WHERE person=? ORDER BY score DESC LIMIT 4', (pid,))]}
+                live = live_questions()
+                out = [{'sim': s_, 'a': side(x), 'b': side(y)} for s_, x, y in live[off:off + min(lim, 200)]]
+                return self.send(200, {'total': len(live), 'items': out})
             if p == '/api/question':
                 while QUESTIONS:
                     s, x, y = QUESTIONS[0]
@@ -670,7 +678,10 @@ def main():
         threading.Thread(target=lambda t=t: guard(t), daemon=True, name=t.__name__).start()
     if kv('groupedAt'): threading.Thread(target=build_questions, daemon=True).start()
     log(f'dashboard on http://localhost:{PORT}')
-    ThreadingHTTPServer(('127.0.0.1', PORT), H).serve_forever()
+    class Server(ThreadingHTTPServer):
+        request_queue_size = 256   # default 5: a page of 30–48 cards loads hundreds of images at once and the rest got reset
+        daemon_threads = True
+    Server(('127.0.0.1', PORT), H).serve_forever()
 
 def guard(fn, once=False):
     while True:
