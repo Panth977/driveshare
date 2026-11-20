@@ -730,7 +730,13 @@
             {#if cannot[cur.id]}
               <div class="msg">
                 {#if thumb(cur, px(cur))}<img class="pic small-pic" src={thumb(cur, px(cur))} alt="" referrerpolicy="no-referrer" />{/if}
-                <p>This video's format ({cur.name.split('.').pop()?.toUpperCase()}) cannot play in a browser or on the TV. A playable MP4 copy is on its way (old videos are being converted).</p>
+                {#if bytesOf(cur) < 1e6}
+                  <p>This video file looks damaged or empty (only {formatBytes(bytesOf(cur))}), so it cannot play.</p>
+                {:else if cur.appProperties?.dsPlay}
+                  <p>The MP4 copy of this video did not play either. It sits next to the original in the same folder.</p>
+                {:else}
+                  <p>This video's format ({cur.name.split('.').pop()?.toUpperCase()}) cannot play in a browser or on the TV, and it has no MP4 copy yet.</p>
+                {/if}
                 <a class="btn" href={driveLink(cur)} target="_blank" rel="noopener" onclick={(e) => e.stopPropagation()}>Open in Google Drive</a>
               </div>
             {:else if videoGo}

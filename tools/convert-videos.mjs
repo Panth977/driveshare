@@ -7,9 +7,14 @@
 //   node tools/convert-videos.mjs --one <id> convert one file (a test)
 //
 // Each copy is H.264 + AAC MP4 (deinterlaced, at most 1080p, index at the front so it starts at
-// once), made with the Mac's hardware encoder. Copies go into one folder, "DriveShare previews", in
-// My Drive; the original stays as it is and gets two small labels (appProperties dsPlay = the
-// copy's id, dsPlaySize = its size), which the viewer reads to play the copy instead.
+// once), made with the Mac's hardware encoder. Each copy goes next to its original, in the same
+// folder and with the same date ("Party.MPG" + "Party.mp4"; "Party (converted).mp4" when that name is
+// taken). The original stays as it is and gets two small labels (appProperties dsPlay = the copy's
+// id, dsPlaySize = its size), which the viewer reads to play the copy instead.
+//
+//   node tools/convert-videos.mjs --move-copies   move copies made before this out of the old
+//                                                 "DriveShare previews" folder, next to their originals
+//   MIN_FREE_GB=5 node tools/convert-videos.mjs   keep less disk spare (default 30 GB)
 //
 // Drive access: the owner's token, taken from a signed-in DriveShare page in a headless Chrome
 // (the profile in .convert/profile; the app renews the token there, once an hour).
@@ -30,7 +35,7 @@ const SITE = 'https://driveshare-p977.web.app';
 const API = 'https://www.googleapis.com/drive/v3';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
 const MIMES = ['video/mpeg', 'video/mp2t', 'video/vnd.dlna.mpeg-tts', 'video/avi', 'video/x-msvideo', 'video/x-ms-wmv', 'video/x-flv', 'video/3gpp'];
-const MIN_FREE = 30e9;
+const MIN_FREE = Number(process.env.MIN_FREE_GB || 30) * 1e9;
 mkdirSync(WORK, { recursive: true });
 
 const log = (...a) => {
@@ -99,6 +104,42 @@ async function previewsFolder() {
   const f = await json('POST', `${API}/files?fields=id`, JSON.stringify({ name: 'DriveShare previews', mimeType: 'application/vnd.google-apps.folder', description: 'MP4 copies of old videos (.mpg, .m2t…) so DriveShare can play them on the TV. Made by DriveShare; the originals are untouched.', appProperties: { dsPreviews: '1' } }));
   save();
   return (state.folder = f.id);
+}
+
+// ── where a copy goes: next to its original ──
+const esc = (s) => s.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+async function copyPlace(orig, copyId = null) {
+  const parent = orig.parents?.[0];
+  if (!parent) return { parent: await previewsFolder(), name: `${orig.name.replace(/\.[^.]+$/, '')}.mp4` };
+  const base = orig.name.replace(/\.[^.]+$/, '');
+  for (const name of [`${base}.mp4`, `${base} (converted).mp4`, `${base} (converted ${orig.id.slice(-4)}).mp4`]) {
+    const r = await json('GET', `${API}/files?q=${encodeURIComponent(`'${parent}' in parents and name='${esc(name)}' and trashed=false`)}&fields=files(id)`);
+    if (!r.files.some((x) => x.id !== copyId)) return { parent, name };
+  }
+  throw new Error('no free name for the copy');
+}
+
+async function moveCopies() {
+  const old = await previewsFolder();
+  let moved = 0, same = 0;
+  const ids = Object.keys(state.done);
+  const work = async (id) => {
+    const d = state.done[id];
+    const orig = await json('GET', `${API}/files/${id}?fields=id,name,parents,modifiedTime,trashed`).catch(() => null);
+    const copy = await json('GET', `${API}/files/${d.mp4}?fields=id,name,parents`).catch(() => null);
+    if (!orig || !copy || orig.trashed) { log(`  skip ${d.name}: ${!orig ? 'original gone' : !copy ? 'copy gone' : 'original in the bin'}`); return; }
+    if (copy.parents?.[0] === orig.parents?.[0]) { same++; return; }
+    const at = await copyPlace(orig, copy.id);
+    const q = `addParents=${at.parent}&removeParents=${(copy.parents ?? [old]).join(',')}&fields=id`;
+    await api('PATCH', `${API}/files/${copy.id}?${q}`, JSON.stringify({ name: at.name, modifiedTime: orig.modifiedTime }));
+    moved++;
+    if (moved % 25 === 0) log(`  moved ${moved}…`);
+  };
+  for (let i = 0; i < ids.length; i += 4) await Promise.all(ids.slice(i, i + 4).map((id) => work(id).catch((e) => log(`  ✗ ${state.done[id].name}: ${e.message}`))));
+  log(`copies next to their originals: ${moved} moved, ${same} were already there`);
+  const left = await json('GET', `${API}/files?q=${encodeURIComponent(`'${old}' in parents and trashed=false`)}&fields=files(id,name)`);
+  if (!left.files.length) { await api('PATCH', `${API}/files/${old}?fields=id`, JSON.stringify({ trashed: true })); log('"DriveShare previews" is empty: moved to the bin'); delete state.folder; save(); }
+  else log(`"DriveShare previews" still holds ${left.files.length} files; left as it is`);
 }
 
 // ── download (resumable, to disk) ──
@@ -191,7 +232,7 @@ async function fetchSource(f) {
   await download(f, src);
 }
 
-async function one(f, folder, fetched) {
+async function one(f, fetched) {
   const src = join(WORK, `${f.id}.src`);
   const dst = join(WORK, `${f.id}.mp4`);
   const t0 = Date.now();
@@ -200,8 +241,10 @@ async function one(f, folder, fetched) {
   const t1 = Date.now();
   await convert(src, dst, probe(src));
   const t2 = Date.now();
-  const name = `${f.name.replace(/\.[^.]+$/, '')}.mp4`;
-  const up = await upload(dst, name, folder, f.id);
+  const at = await copyPlace(f);
+  const up = await upload(dst, at.name, at.parent, f.id);
+  // Same date as the original, so the two sit together when sorted by date too.
+  if (f.modifiedTime) await api('PATCH', `${API}/files/${up.id}?fields=id`, JSON.stringify({ modifiedTime: f.modifiedTime }));
   // (modifiedTime given back as it was: a label must not make the original look edited today.)
   await api('PATCH', `${API}/files/${f.id}?fields=id`, JSON.stringify({ appProperties: { dsPlay: up.id, dsPlaySize: String(up.size ?? statSync(dst).size) }, ...(f.modifiedTime ? { modifiedTime: f.modifiedTime } : {}) }));
   const mb = (statSync(dst).size / 1e6).toFixed(0);
@@ -215,7 +258,9 @@ async function one(f, folder, fetched) {
 
 const args = process.argv.slice(2);
 try {
-  if (args[0] === '--fix-dates') {
+  if (args[0] === '--move-copies') {
+    await moveCopies();
+  } else if (args[0] === '--fix-dates') {
     // Originals labelled before the line above: put their date back to their last content change.
     for (const id of Object.keys(state.done)) {
       const f = await json('GET', `${API}/files/${id}?fields=id,name,modifiedTime`);
@@ -225,15 +270,13 @@ try {
     }
   } else if (args[0] === '--one') {
     const f = await json('GET', `${API}/files/${args[1]}?fields=id,name,size,mimeType,parents,modifiedTime,appProperties,videoMediaMetadata(width,height,durationMillis)`);
-    await one(f, await previewsFolder());
+    await one(f);
   } else {
     const list = await candidates();
     const gb = list.reduce((s, f) => s + Number(f.size), 0) / 1e9;
     log(`${list.length} videos to convert (${gb.toFixed(0)} GB), ${Object.keys(state.done).length} done before`);
     if (args[0] === '--list') { for (const f of list) console.log(f.id, f.mimeType, (Number(f.size) / 1e6).toFixed(0) + 'MB', f.name); }
     else {
-      const folder = await previewsFolder();
-      save();
       const todo = list.filter((f) => (state.failed[f.id]?.tries ?? 0) < 3);
       // Download the next video while this one is converted and sent (down and up run side by side).
       let ahead = todo[0] ? fetchSource(todo[0]) : null;
@@ -246,7 +289,7 @@ try {
           await mine;
           ahead = todo[i + 1] ? fetchSource(todo[i + 1]) : null;
           ahead?.catch(() => {});
-          await one(f, folder, Promise.resolve());
+          await one(f, Promise.resolve());
         } catch (e) {
           if (!ahead && todo[i + 1]) { ahead = fetchSource(todo[i + 1]); ahead.catch(() => {}); }
           state.failed[f.id] = { name: f.name, error: String(e.message ?? e).slice(0, 300), tries: (state.failed[f.id]?.tries ?? 0) + 1 };
