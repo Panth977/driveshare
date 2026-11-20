@@ -8,8 +8,9 @@
     { id: 'shares', label: 'Shares', to: '/' },
     { id: 'drive', label: 'My Drive', to: '/drive' },
     { id: 'view', label: 'Viewer', to: '/view' },
+    { id: 'tv', label: 'TV profiles', to: '/tv-profiles' },
   ];
-  const current = $derived(router.path.startsWith('/drive') ? 'drive' : router.path.startsWith('/view') ? 'view' : 'shares');
+  const current = $derived(router.path.startsWith('/drive') ? 'drive' : router.path.startsWith('/view') ? 'view' : router.path.startsWith('/tv-profiles') ? 'tv' : 'shares');
   let menu = $state(false);
 </script>
 
@@ -36,6 +37,7 @@
         <div class="menu" style="right:1rem; top:3.4rem" data-modal>
           <div class="small muted" style="padding:0.5rem 0.65rem">{account.user?.email ?? 'demo'}</div>
           <hr />
+          <button onclick={() => { menu = false; nav('/tv-profiles'); }}>TV profiles and PINs</button>
           <button onclick={() => { menu = false; void account.signOut(); }}>Sign out</button>
         </div>
       {/if}

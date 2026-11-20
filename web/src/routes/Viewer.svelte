@@ -326,7 +326,7 @@
     const saved = activity.run(`Bin ${f.name}`, async () => { await drive!.update(f.id, { trashed: true }); sizes.local({ id: f.id, removed: true }); }, putBack);
     // On a TV, Undo gets the focus: OK undoes, the arrows just carry on.
     if (tv.on) setTimeout(() => document.querySelector<HTMLElement>('.toast button.primary')?.focus(), 50);
-    toast.show(tv.on ? `Binned ${f.name} · OK to undo` : `Binned ${f.name}`, { label: 'Undo', run: () => {
+    toast.show(tv.on ? `Deleted ${f.name} · OK to undo` : `Deleted ${f.name}`, { label: 'Undo', run: () => {
       putBack();
       index = list?.findIndex((x) => x.id === f.id) ?? index;
       void activity.run(`Undo bin ${f.name}`, async () => {
@@ -703,7 +703,7 @@
         {#if profiles.can('share')}<button class="ghost" title="Share link (S)" onclick={share}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>Share</button>{/if}
         <button class="ghost icon" title="Details (I)" aria-label="Details" onclick={() => (panel = panel === 'info' ? '' : 'info')}>ⓘ</button>
         {#if cur}<a class="btn ghost icon" title="Open in Google Drive" aria-label="Open in Google Drive" href={driveLink(cur)} target="_blank" rel="noopener">↗</a>{/if}
-        {#if profiles.can('bin')}<button class="ghost danger" title="Move to bin (Del)" onclick={binCurrent}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Bin</button>{/if}
+        {#if profiles.can('bin')}<button class="ghost danger" title="Delete (Del): hidden here, kept in Drive 7 days" onclick={binCurrent}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete</button>{/if}
       </div>
     </header>
 

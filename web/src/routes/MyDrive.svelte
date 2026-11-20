@@ -11,7 +11,7 @@
   import { toast } from '../lib/toast.svelte.ts';
   import { nav } from '../lib/router.svelte.ts';
   import { editable, isBack, tv } from '../lib/tv.svelte.ts';
-  import { turnCss, ago, bytesOf, driveLink, duration, failText, isFolder, isMedia, kindOf, thumb, type DFile } from '../lib/gdrive.ts';
+  import { turnCss, ago, bytesOf, daysLeft, DELETE_DAYS, driveLink, duration, failText, isFolder, isMedia, kindOf, thumb, type DFile } from '../lib/gdrive.ts';
   import { children as cacheChildren, remember } from '../lib/listcache.ts';
   import { linked } from '../lib/linked.svelte.ts';
   import FileIcon from '../components/drive/FileIcon.svelte';
@@ -28,7 +28,7 @@
 
   type View = 'list' | 'grid' | 'columns';
   type SortKey = 'name' | 'size' | 'modified' | 'kind';
-  const VIRTUAL: Record<string, string> = { recent: 'Recent', starred: 'Starred', shared: 'Shared with me', search: 'Search' };
+  const VIRTUAL: Record<string, string> = { recent: 'Recent', starred: 'Starred', shared: 'Shared with me', search: 'Search', deleted: 'Deleted' };
 
   let view = $state<View>((localStorage.getItem('ds.view') as View) || 'list');
   let sortKey = $state<SortKey>((localStorage.getItem('ds.sort') as SortKey) || 'name');
@@ -82,6 +82,7 @@
       // (After a tick: run synchronously inside the reload effect, setting `items` would re-trigger it.)
       if (virtual === 'recent') { await Promise.resolve(); items = recentAsFiles(); }
       else if (virtual === 'shared') items = await drive.query('sharedWithMe = true and trashed = false', { orderBy: 'folder,modifiedTime desc', max: 500 });
+      else if (virtual === 'deleted') items = await drive.query("appProperties has { key='dsDel' and value='1' } and trashed = false", { orderBy: 'modifiedTime desc', deleted: true, max: 1000 });
       else if (virtual === 'starred') items = await drive.query('starred = true and trashed = false', { orderBy: 'folder,name_natural' });
       else if (virtual === 'search') items = q.trim() ? await drive.query(`name contains '${q.trim().replace(/\\/g, '\\\\').replace(/'/g, "\\'")}' and trashed = false`, { orderBy: 'folder,modifiedTime desc', max: 300 }) : [];
       else if (current) items = await load(current, force);
@@ -160,6 +161,7 @@
 
   // ── actions ──
   function open(f: DFile) {
+    if (virtual === 'deleted' && !isFolder(f)) { window.open(driveLink(f), '_blank', 'noopener'); return; }
     if (isFolder(f)) nav(`/drive/${f.id}`);
     else nav(`/view/${f.parents?.[0] ?? current ?? 'root'}/${f.id}`);
   }
@@ -176,7 +178,7 @@
       if (items && at >= 0) items = ins(items, at);
       for (const [k, i] of kidsAt) { const l = kids.get(k); if (l) kids.set(k, ins(l, i)); }
     });
-    toast.show(`Moved “${f.name}” to the bin`, { label: 'Undo', run: () => void untrash(f, saved) });
+    toast.show(`Deleted “${f.name}”`, { label: 'Undo', run: () => void untrash(f, saved) });
   }
   async function untrash(f: DFile, saved: Promise<boolean>) {
     if (!(await saved)) return;
@@ -217,13 +219,27 @@
   }
   function askTrash(f: DFile) {
     const t = isFolder(f) ? folderTotals(f) : undefined;
-    prompt = { title: `Move “${f.name}” to the bin?`, ok: 'Move to bin', danger: true,
-      text: t ? `${formatBytes(t.bytes)} in ${t.files.toLocaleString()} files. You can restore it from Drive's bin for 30 days.` : 'You can restore it from Drive\'s bin for 30 days.',
+    const keep = `It disappears from DriveShare but stays in Google Drive for ${DELETE_DAYS} days (restore it from Deleted), then goes to Drive's bin.`;
+    prompt = { title: `Delete “${f.name}”?`, ok: 'Delete', danger: true,
+      text: t ? `${formatBytes(t.bytes)} in ${t.files.toLocaleString()} files. ${keep}` : keep,
       run: () => { prompt = null; void trash(f); } };
+  }
+
+  function restore(f: DFile) {
+    items = items?.filter((x) => x.id !== f.id) ?? null;
+    toast.show(`Restored “${f.name}”`, undefined, 2000);
+    void activity.run(`Restore ${f.name}`, async () => { sizes.local(await drive!.update(f.id, { trashed: false })); for (const p of f.parents ?? []) kids.delete(p); }, () => { if (items && !items.some((x) => x.id === f.id)) items = [f, ...items]; });
   }
 
   function menuFor(f: DFile, x: number, y: number) {
     selected = f.id;
+    if (virtual === 'deleted') {
+      menu = { x, y, items: [
+        { label: 'Restore', key: '↵', run: () => restore(f) },
+        { label: 'Open in Google Drive', run: () => window.open(driveLink(f), '_blank', 'noopener'), sep: true },
+      ] };
+      return;
+    }
     const folder = isFolder(f);
     const list: MenuItem[] = [
       { label: folder ? 'Open' : 'Open in viewer', key: '↵', run: () => open(f) },
@@ -234,7 +250,7 @@
       { label: 'Rename…', key: 'F2', run: () => rename(f) },
       ...(folder ? [{ label: 'Upload a folder into this…', run: () => { uploadTarget = f.id; void uploadFolder(); } }, { label: 'Sync a local folder into this…', run: () => void syncFolder({ id: f.id, name: f.name }) }] : []),
       { label: 'Open in Google Drive', run: () => window.open(driveLink(f), '_blank', 'noopener'), sep: true },
-      { label: 'Move to bin', key: 'Del', danger: true, run: () => askTrash(f), sep: true },
+      { label: 'Delete…', key: 'Del', danger: true, run: () => askTrash(f), sep: true },
     ];
     menu = { x, y, items: list };
   }
@@ -346,7 +362,7 @@
         break;
       case 'Enter': if (f) { if (e.metaKey && isFolder(f)) preview(f); else open(f); } break;
       case ' ': if (f) { isFolder(f) ? preview(f) : open(f); } break;
-      case 'Delete': if (f) askTrash(f); break;
+      case 'Delete': if (f && virtual !== 'deleted') askTrash(f); break;
       case 'Backspace': if (e.metaKey && f) askTrash(f); else if (path.length > 1) nav(`/drive/${path.at(-2)!.id}`); else handled = false; break;
       case 'F2': if (f) rename(f); break;
       case 's': case 'S': if (f && !e.metaKey) sharing = f; else handled = false; break;
@@ -420,6 +436,7 @@
         <button class:on={virtual === 'recent'} onclick={() => nav('/drive/recent')}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Recent</button>
         <button class:on={virtual === 'shared'} onclick={() => nav('/drive/shared')}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="3.2"/><path d="M3 19c.6-3.2 3-5 6-5s5.4 1.8 6 5"/><circle cx="17" cy="9" r="2.4"/><path d="M16 14c2.6 0 4.4 1.6 5 4.4"/></svg>Shared with me</button>
         <button class:on={virtual === 'starred'} onclick={() => nav('/drive/starred')}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1 6.2L12 17.3 6.5 20.2l1-6.2L3 9.6l6.2-.9z"/></svg>Starred</button>
+        <button class:on={virtual === 'deleted'} onclick={() => nav('/drive/deleted')}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Deleted</button>
       </nav>
 
       {#if linked.list?.length}
@@ -506,7 +523,7 @@
       {:else if shown.length === 0}
         <div class="empty">
           <FileIcon file={{ mimeType: 'application/vnd.google-apps.folder', name: '' }} size={4} />
-          <p class="muted">{virtual === 'search' ? (q ? 'Nothing matches.' : 'Type to search your Drive.') : 'This folder is empty.'}</p>
+          <p class="muted">{virtual === 'search' ? (q ? 'Nothing matches.' : 'Type to search your Drive.') : virtual === 'deleted' ? `Nothing deleted. Deleted files wait here ${DELETE_DAYS} days, then go to Google Drive's bin.` : 'This folder is empty.'}</p>
           {#if current}<p class="small faint">Drop files or a whole folder here to upload.</p>{/if}
         </div>
       {:else if view === 'list'}
@@ -536,7 +553,7 @@
               <span class="c-size num">
                 {#if s >= 0}<span>{formatBytes(s)}</span><span class="mini"><span style:width="{(s / maxSize) * 100}%"></span></span>{:else}<span class="faint">—</span>{/if}
               </span>
-              <span class="c-items num muted">{isFolder(f) ? itemsText(t) : f.videoMediaMetadata ? duration(f.videoMediaMetadata.durationMillis) : f.imageMediaMetadata?.width ? `${f.imageMediaMetadata.width}×${f.imageMediaMetadata.height}` : ''}</span>
+              <span class="c-items num muted">{virtual === 'deleted' ? `bin in ${daysLeft(f)} d` : isFolder(f) ? itemsText(t) : f.videoMediaMetadata ? duration(f.videoMediaMetadata.durationMillis) : f.imageMediaMetadata?.width ? `${f.imageMediaMetadata.width}×${f.imageMediaMetadata.height}` : ''}</span>
               <span class="c-kind muted">{kindOf(f)}</span>
               <span class="c-mod muted">{ago(f.modifiedTime)}</span>
               <button class="more ghost icon" aria-label="More" tabindex="-1" onclick={(e) => { e.stopPropagation(); menuAt(f, e.currentTarget.closest('.lr')); }}>⋯</button>
@@ -612,7 +629,7 @@
         {#if shown}{shown.length.toLocaleString()} item{shown.length === 1 ? '' : 's'}{/if}
         {#if sel} · <span class="ink">{sel.name}</span> · {sizeOf(sel) >= 0 ? formatBytes(sizeOf(sel)) : ''}{/if}
         <span class="grow"></span>
-        <span class="faint keys"><span class="kbd">↵</span> open <span class="kbd">Space</span> preview <span class="kbd">S</span> share <span class="kbd">Del</span> bin {tv.on ? '· hold OK for menu' : '· right-click for more'}</span>
+        <span class="faint keys"><span class="kbd">↵</span> open <span class="kbd">Space</span> preview <span class="kbd">S</span> share <span class="kbd">Del</span> delete {tv.on ? '· hold OK for menu' : '· right-click for more'}</span>
       </footer>
 
       {#if over}

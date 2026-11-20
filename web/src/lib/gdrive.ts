@@ -57,7 +57,7 @@ export interface DriveApi {
   token(): Promise<string>;
   about(): Promise<{ email: string; quota: Quota }>;
   children(folderId: string, opts?: { orderBy?: string }): Promise<DFile[]>;
-  query(q: string, opts?: { orderBy?: string; max?: number }): Promise<DFile[]>;
+  query(q: string, opts?: { orderBy?: string; max?: number; deleted?: boolean }): Promise<DFile[]>;
   get(id: string): Promise<DFile>;
   /** Every non-trashed file and folder you can see, page by page (for the size index). */
   everything(onPage: (files: DFile[]) => void, fields: string): Promise<void>;
@@ -160,7 +160,13 @@ export class RestDrive implements DriveApi {
     return { email: r.user?.emailAddress ?? '', quota: r.storageQuota ?? {} };
   }
 
-  async query(q: string, opts: { orderBy?: string; max?: number } = {}): Promise<DFile[]> {
+  /** Files deleted in DriveShare (dsDel) are left out, unless `deleted` asks for them. */
+  async query(q: string, opts: { orderBy?: string; max?: number; deleted?: boolean } = {}): Promise<DFile[]> {
+    const out = await this.rawQuery(q, opts);
+    return opts.deleted ? out : out.filter((f) => !isDeleted(f));
+  }
+
+  private async rawQuery(q: string, opts: { orderBy?: string; max?: number }): Promise<DFile[]> {
     const out: DFile[] = [];
     let page: string | undefined;
     do {
@@ -238,7 +244,19 @@ export class RestDrive implements DriveApi {
     return this.call<DFile>('POST', `${API}/files?fields=${FIELDS}`, { name, mimeType: FOLDER_MIME, parents: [parent] });
   }
 
-  update(id: string, patch: { name?: string; trashed?: boolean; starred?: boolean; appProperties?: Record<string, string | null> }) {
+  /**
+   * Change a file. `trashed` does not use Drive's bin: DriveShare deletes softly. The file gets the
+   * labels dsDel/dsDelAt and disappears from DriveShare (still there in Google Drive); a daily job
+   * moves it to Drive's bin after DELETE_DAYS. `trashed: false` takes the labels off again. The
+   * file's date stays as it was.
+   */
+  async update(id: string, patch: { name?: string; trashed?: boolean; starred?: boolean; appProperties?: Record<string, string | null> }) {
+    if (patch.trashed !== undefined) {
+      const { trashed, ...rest } = patch;
+      const now = await this.call<DFile>('GET', `${API}/files/${encodeURIComponent(id)}?fields=modifiedTime`);
+      const body = { ...rest, modifiedTime: now.modifiedTime, appProperties: { ...(rest.appProperties ?? {}), dsDel: trashed ? '1' : null, dsDelAt: trashed ? String(Date.now()) : null } };
+      return this.call<DFile>('PATCH', `${API}/files/${encodeURIComponent(id)}?fields=${FIELDS}`, body).then((f) => { noteUpdate(f, patch); return f; });
+    }
     return this.call<DFile>('PATCH', `${API}/files/${encodeURIComponent(id)}?fields=${FIELDS}`, patch).then((f) => { noteUpdate(f, patch); return f; });
   }
 
@@ -399,6 +417,12 @@ export const isVideo = (f: Pick<DFile, 'mimeType'>) => f.mimeType.startsWith('vi
 export const isAudio = (f: Pick<DFile, 'mimeType'>) => f.mimeType.startsWith('audio/');
 export const isPdf = (f: Pick<DFile, 'mimeType'>) => f.mimeType === 'application/pdf';
 export const isMedia = (f: Pick<DFile, 'mimeType'>) => isImage(f) || isVideo(f);
+/** Deleted in DriveShare: hidden here, binned in Drive after DELETE_DAYS. */
+export const DELETE_DAYS = 7;
+export const isDeleted = (f: Pick<DFile, 'appProperties'>) => f.appProperties?.dsDel === '1';
+/** Days until a deleted file goes to Drive's bin. */
+export const daysLeft = (f: Pick<DFile, 'appProperties'>) => Math.max(0, Math.ceil((Number(f.appProperties?.dsDelAt || 0) + DELETE_DAYS * 864e5 - Date.now()) / 864e5));
+
 export const bytesOf = (f: Pick<DFile, 'size' | 'quotaBytesUsed'>) => Number(f.size ?? f.quotaBytesUsed ?? 0);
 
 /** A sharper thumbnail: Drive's links end in `=s220`; ask for the size we draw. */

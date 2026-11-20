@@ -584,3 +584,28 @@ export const sweep = onSchedule({ schedule: process.env.SWEEP_SCHEDULE || 'every
     }
   }
 });
+
+/**
+ * Files deleted in DriveShare only get the labels dsDel=1 and dsDelAt=<ms> (the app hides them).
+ * Once a day, for every account with Drive connected, the ones older than DELETE_DAYS go to Drive's
+ * own bin (where Google keeps them 30 more days). One Drive query per account when nothing is due.
+ */
+const DELETE_DAYS = 7;
+export const purgeDeleted = onSchedule({ schedule: process.env.PURGE_SCHEDULE || 'every day 03:30', timeZone: 'Asia/Kolkata', region: REGION, secrets: SECRETS, timeoutSeconds: 300, memory: '256MiB', cpu: 'gcf_gen1' }, async () => {
+  const cutoff = Date.now() - DELETE_DAYS * 86_400_000;
+  for (const u of (await getDocs(collection(db, users))).docs) {
+    let d: Drive;
+    try { d = await driveFor(u.id); } catch { continue; } // Drive not connected
+    try {
+      const due = (await d.list(`appProperties has { key='dsDel' and value='1' } and trashed = false`))
+        .filter((f) => Number(f.appProperties?.dsDelAt || 0) < cutoff);
+      let binned = 0, failed = 0;
+      for (const f of due) {
+        try { await d.update(f.id, { trashed: true }); binned++; } catch (e) { failed++; console.error(`purge ${f.id}:`, e instanceof DriveError ? e.message : e); }
+      }
+      if (due.length) console.log(`purge ${u.id}: ${binned} moved to Drive's bin, ${failed} failed`);
+    } catch (e) {
+      console.error(`purge ${u.id}:`, e instanceof DriveError ? e.message : e);
+    }
+  }
+});

@@ -14,7 +14,7 @@ export const ACTIONS: { id: Action; label: string; hint: string }[] = [
   { id: 'comment', label: 'Comment', hint: 'add comments' },
   { id: 'share', label: 'Share links', hint: 'make share links' },
   { id: 'edit', label: 'Edit', hint: 'star or rotate pictures' },
-  { id: 'bin', label: 'Move to bin', hint: 'move files to the bin' },
+  { id: 'bin', label: 'Delete', hint: 'delete files' },
 ];
 
 export interface Profile {
@@ -26,6 +26,8 @@ export interface Profile {
   pin: string;
   /** Ask the PIN before these actions (and before switching to this profile). */
   pinFor: Action[];
+  /** Folders this profile sees on the TV (with everything inside them). Empty or missing = all of Drive. */
+  folders?: { id: string; name: string }[];
 }
 
 export const COLORS = ['#7c9cff', '#4fd1a1', '#f5b454', '#ff7b9c', '#c18cff', '#5ad1e6'];
@@ -67,6 +69,7 @@ class Profiles {
     if (!uid || this.stop) return;
     this.stop = onSnapshot(doc(collection(db, settings, uid), 'profiles'), (s) => {
       try { this.list = JSON.parse((s.data() as { profiles?: string } | undefined)?.profiles ?? '[]'); } catch { this.list = []; }
+      this.seen.clear();
       this.loaded = true;
     }, () => { this.loaded = true; });
   }
@@ -118,6 +121,39 @@ class Profiles {
     if (!p.can[action]) { toast?.(`${p.name} cannot ${ACTIONS.find((a) => a.id === action)!.hint} on this TV.`); return false; }
     if (p.pinFor.includes(action)) return this.verify(p, `PIN for ${p.name} to ${ACTIONS.find((a) => a.id === action)!.hint}`);
     return true;
+  }
+
+  /** On the TV, the folders the current profile is kept to; null = it sees everything. */
+  get folders(): { id: string; name: string }[] | null {
+    const f = this.active ? this.current?.folders : undefined;
+    return f?.length ? f : null;
+  }
+
+  private seen = new Map<string, boolean>();
+  /**
+   * May the current profile open this folder (or a file's folder)? Yes when it is one of the
+   * profile's folders or inside one (walks up the parents, remembered). Recent, Starred, Shared and
+   * My Drive itself are outside every list.
+   */
+  async canSee(id: string, d: { get(id: string): Promise<{ parents?: string[] }> } | null): Promise<boolean> {
+    const fs = this.folders;
+    if (!fs) return true;
+    const allow = new Set(fs.map((f) => f.id));
+    if (allow.has(id)) return true;
+    if (!d || !/^[\w-]{15,}$/.test(id)) return false;
+    const key = `${this.currentId}:${id}`;
+    const known = this.seen.get(key);
+    if (known !== undefined) return known;
+    let ok = false;
+    let at = id;
+    for (let i = 0; i < 40; i++) {
+      const p = (await d.get(at).catch(() => null))?.parents?.[0];
+      if (!p) break;
+      if (allow.has(p)) { ok = true; break; }
+      at = p;
+    }
+    this.seen.set(key, ok);
+    return ok;
   }
 
   /** Without asking: is `action` shown as available at all? */

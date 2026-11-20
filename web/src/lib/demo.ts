@@ -1,7 +1,7 @@
 // Dev only (`?demo` on the Vite server): a made-up Drive in memory, so the views can be tried and
 // screenshotted without a Google account. Never part of a production path (gated by import.meta.env.DEV).
 import { noteUpdate } from './listcache.ts';
-import { FOLDER_MIME, type DComment, type DFile, type DPermission, type DriveApi } from './gdrive.ts';
+import { FOLDER_MIME, isDeleted, type DComment, type DFile, type DPermission, type DriveApi } from './gdrive.ts';
 
 const HUES = [12, 28, 42, 160, 190, 210, 260, 300, 330];
 function art(seed: number, w: number, h: number, label: string): string {
@@ -83,10 +83,12 @@ export class DemoDrive implements DriveApi {
     const byDate = orderBy.startsWith('modifiedTime');
     return list.sort((a, b) => (Number(b.mimeType === FOLDER_MIME) - Number(a.mimeType === FOLDER_MIME)) || (byDate ? String(b.modifiedTime).localeCompare(String(a.modifiedTime)) : a.name.localeCompare(b.name, undefined, { numeric: true })));
   }
-  async children(folderId: string, o: { orderBy?: string } = {}) { await wait(); return this.sort([...this.files.values()].filter((f) => f.parents?.[0] === folderId && !f.trashed), o.orderBy); }
-  async query(q: string, o: { orderBy?: string; max?: number } = {}) {
+  async children(folderId: string, o: { orderBy?: string } = {}) { await wait(); return this.sort([...this.files.values()].filter((f) => f.parents?.[0] === folderId && !f.trashed && !isDeleted(f)), o.orderBy); }
+  async query(q: string, o: { orderBy?: string; max?: number; deleted?: boolean } = {}) {
     await wait();
     let list = [...this.files.values()].filter((f) => f.id !== 'root' && !f.trashed);
+    if (q.includes("key='dsDel'")) list = list.filter(isDeleted);
+    else if (!o.deleted) list = list.filter((f) => !isDeleted(f));
     if (q.includes('anyoneWithLink')) list = list.filter((f) => this.perms.has(f.id));
     if (q.includes("mimeType contains 'image/'")) list = list.filter((f) => /^(image|video)\//.test(f.mimeType));
     if (q.includes('sharedWithMe')) list = list.filter((f) => f.shared);
@@ -105,7 +107,11 @@ export class DemoDrive implements DriveApi {
   async changes() { return { changes: [], next: '1', done: true }; }
   async createFolder(name: string, parent: string) { const f: DFile = { id: id(), name, mimeType: FOLDER_MIME, parents: [parent], modifiedTime: new Date().toISOString(), ownedByMe: true }; this.files.set(f.id, f); return f; }
   // Saves take a moment, like Drive does (and `window.__demoFail = true` makes them fail, for tests).
-  async update(fid: string, patch: { name?: string; trashed?: boolean; starred?: boolean; appProperties?: Record<string, string | null> }) { await wait(700); if ((globalThis as { __demoFail?: boolean }).__demoFail) throw new Error('Demo failure'); const f = this.files.get(fid)!; Object.assign(f, patch); noteUpdate(f, patch); return { ...f }; }
+  async update(fid: string, patch: { name?: string; trashed?: boolean; starred?: boolean; appProperties?: Record<string, string | null> }) { await wait(700); if ((globalThis as { __demoFail?: boolean }).__demoFail) throw new Error('Demo failure'); const f = this.files.get(fid)!;
+    // Like the real client: deleting labels the file (dsDel) instead of binning it.
+    if (patch.trashed !== undefined) { const { trashed, ...rest } = patch; Object.assign(f, rest); const ap = { ...(f.appProperties ?? {}) }; if (trashed) { ap.dsDel = '1'; ap.dsDelAt = String(Date.now()); } else { delete ap.dsDel; delete ap.dsDelAt; } f.appProperties = ap; }
+    else Object.assign(f, patch);
+    noteUpdate(f, patch); return { ...f }; }
   async comments(fid: string) { await wait(); return this.comm.get(fid) ?? []; }
   async addComment(fid: string, content: string) { await wait(700); const c = { id: id(), content, createdTime: new Date().toISOString(), author: { displayName: 'You', me: true } }; this.comm.set(fid, [...(this.comm.get(fid) ?? []), c]); return c; }
   async permissions(fid: string) { return this.perms.get(fid) ?? []; }

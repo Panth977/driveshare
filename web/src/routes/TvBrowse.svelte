@@ -16,7 +16,7 @@
   import { toast } from '../lib/toast.svelte.ts';
   import { isBack, tv, inTvApp } from '../lib/tv.svelte.ts';
   import { children as cachedChildren, folderMeta, peek } from '../lib/listcache.ts';
-  import { turnCss, ago, bytesOf, duration, failText, isFolder, isVideo, kindOf, sortTv, thumb, type DFile } from '../lib/gdrive.ts';
+  import { FOLDER_MIME, turnCss, ago, bytesOf, duration, failText, isFolder, isVideo, kindOf, sortTv, thumb, type DFile } from '../lib/gdrive.ts';
   import FileIcon from '../components/drive/FileIcon.svelte';
   import ShareDialog from '../components/drive/ShareDialog.svelte';
   import Prompt from '../components/drive/Prompt.svelte';
@@ -35,6 +35,11 @@
     { id: 'shared', label: 'Shared with me' },
   ];
   const VIRTUAL = new Set(['recent', 'starred', 'shared']);
+  // A profile kept to some folders: its home is those folders, and the places bar lists them.
+  const allowed = $derived(profiles.folders);
+  const places = $derived(allowed ? [{ id: '', label: 'Home' }, ...allowed.map((f) => ({ id: f.id, label: f.name }))] : PLACES);
+  const linkedShown = $derived(allowed ? [] : (linked.list ?? []));
+  const restrictedHome = $derived(!!allowed && !place);
 
   let items = $state<DFile[] | null>(null);
   let folder = $state<DFile | null>(null);
@@ -56,12 +61,19 @@
     const d = drive;
     if (!d) return;
     // A folder seen lately: drawn at once from memory (no empty tiles while it is asked again).
-    const quick = !virtual && folderId ? (peek(folderId) ?? peek(folderId, { orderBy: 'name_natural' })) : undefined;
+    const quick = !restrictedHome && !virtual && folderId ? (peek(folderId) ?? peek(folderId, { orderBy: 'name_natural' })) : undefined;
     items = quick ? sortTv(quick) : null;
     if (quick) folder = folderMeta.get(folderId) ?? folder;
     error = '';
     limit = 60;
     try {
+      if (restrictedHome) {
+        folder = { id: '', name: profiles.current?.name ?? 'Home', mimeType: FOLDER_MIME };
+        items = allowed!.map((f) => ({ id: f.id, name: f.name, mimeType: FOLDER_MIME }));
+        await tick();
+        restoreFocus();
+        return;
+      }
       // Recent = folders you looked through lately (newest first), each with the photo you were on.
       if (virtual === 'recent') { folder = null; await Promise.resolve(); items = recentAsFiles(); }
       else if (virtual === 'starred') { folder = null; items = await d.query('starred = true and trashed = false', { orderBy: 'folder,name_natural' }); }
@@ -78,7 +90,7 @@
   }
   // (untrack: load() reads and sets the list right away when it is in memory; that must not
   // make this effect depend on the list it sets.)
-  $effect(() => { void place; void mydrive.rootId; if (drive) untrack(() => void load()); });
+  $effect(() => { void place; void mydrive.rootId; void allowed; if (drive) untrack(() => void load()); });
 
 
   const shown = $derived(items ? items.slice(0, limit) : null);
@@ -152,7 +164,7 @@
     const putBack = () => { if (items && !items.some((x) => x.id === f.id)) items = [...items.slice(0, at), f, ...items.slice(at)]; };
     items = items?.filter((x) => x.id !== f.id) ?? null;
     const saved = activity.run(`Bin ${f.name}`, async () => { await drive!.update(f.id, { trashed: true }); sizes.local({ id: f.id, removed: true }); }, putBack);
-    toast.show(`Moved “${f.name}” to the bin`, { label: 'Undo', run: () => {
+    toast.show(`Deleted “${f.name}”`, { label: 'Undo', run: () => {
       putBack();
       void activity.run(`Undo bin ${f.name}`, async () => { if (await saved) sizes.local(await drive!.update(f.id, { trashed: false })); }, () => { items = items?.filter((x) => x.id !== f.id) ?? null; });
     } });
@@ -166,7 +178,9 @@
     if (e.defaultPrevented) return;
     if (isBack(e)) {
       // Handled = preventDefault, so the TV app knows to stay open; at the top it closes.
-      if (!virtual && folder && folderId !== mydrive.rootId) {
+      if (allowed && place && allowed.some((f) => f.id === place)) { e.preventDefault(); nav('/drive'); }
+      else if (restrictedHome) { /* the top: the TV app closes */ }
+      else if (!virtual && folder && folderId !== mydrive.rootId) {
         e.preventDefault();
         const parent = folder.parents?.[0];
         nav(parent && parent !== mydrive.rootId ? `/drive/${parent}` : '/drive');
@@ -196,10 +210,10 @@
   <header class="top">
     <div class="brand"><img src="/icon.svg" alt="" />DriveShare</div>
     <nav class="places" aria-label="Places">
-      {#each PLACES as p}
-        <button class:on={(p.id === '' && !virtual && (!place || place === mydrive.rootId)) || p.id === virtual} onclick={() => nav(p.id ? `/drive/${p.id}` : '/drive')}>{p.label}</button>
+      {#each places as p}
+        <button class:on={allowed ? p.id === place : (p.id === '' && !virtual && (!place || place === mydrive.rootId)) || p.id === virtual} onclick={() => nav(p.id ? `/drive/${p.id}` : '/drive')}>{p.label}</button>
       {/each}
-      {#each linked.list ?? [] as l (l.folderId)}
+      {#each linkedShown as l (l.folderId)}
         <button class:on={place === l.folderId} onclick={() => nav(`/drive/${l.folderId}`)}>{l.name}</button>
       {/each}
     </nav>
@@ -223,7 +237,7 @@
           <svg viewBox="0 0 24 24" width="1em" height="1em"><path d="M8 5v14l11-7z" fill="currentColor" /></svg> Show all
         </button>
       {/if}
-      {#if !virtual && items?.some((f) => isFolder(f))}
+      {#if !virtual && !restrictedHome && items?.some((f) => isFolder(f))}
         <button class="play alt" onclick={() => previewAll(undefined, true)}>With subfolders</button>
       {/if}
     </div>
@@ -289,7 +303,7 @@
           <button onclick={() => { menuFor = null; previewAll(f, true); }}>Show everything, with subfolders</button>{/if}
         {#if profiles.can('share')}<button onclick={async () => { menuFor = null; if (await profiles.allow('share', (t) => toast.show(t))) sharing = f; }}>Share link (QR code)</button>{/if}
         {#if profiles.can('edit') && !r}<button onclick={() => { menuFor = null; void star(f); restoreFocus(); }}>{f.starred ? 'Remove star' : 'Star'}</button>{/if}
-        {#if profiles.can('bin') && !r}<button class="danger" onclick={async () => { menuFor = null; if (await profiles.allow('bin', (t) => toast.show(t))) confirmBin = f; else restoreFocus(); }}>Move to bin</button>{/if}
+        {#if profiles.can('bin') && !r}<button class="danger" onclick={async () => { menuFor = null; if (await profiles.allow('bin', (t) => toast.show(t))) confirmBin = f; else restoreFocus(); }}>Delete</button>{/if}
         <button onclick={() => { menuFor = null; restoreFocus(); }}>Close</button>
       {/if}
     </div>
@@ -297,7 +311,7 @@
 {/if}
 {#if sharing && drive}<ShareDialog {drive} file={sharing} onclose={() => { sharing = null; restoreFocus(); }} />{/if}
 {#if confirmBin}
-  <Prompt title={`Move “${confirmBin.name}” to the bin?`} ok="Move to bin" danger text="You can restore it from Drive's bin for 30 days."
+  <Prompt title={`Delete “${confirmBin.name}”?`} ok="Delete" danger text="It stays in Google Drive for 7 days (restore it under Deleted on a computer), then goes to Drive's bin."
     onok={() => { const f = confirmBin!; confirmBin = null; void bin(f); }} oncancel={() => { confirmBin = null; restoreFocus(); }} />
 {/if}
 <Toast />

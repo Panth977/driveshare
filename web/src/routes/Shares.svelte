@@ -10,7 +10,6 @@
   import FileIcon from '../components/drive/FileIcon.svelte';
   import Usage from '../components/Usage.svelte';
   import { linked } from '../lib/linked.svelte.ts';
-  import ProfilesEditor from '../components/profiles/ProfilesEditor.svelte';
 
   const isOwner = $derived(demoMode || account.user?.role === 'admin');
 
@@ -135,7 +134,7 @@
       </div>
     {/if}
   </section>
-  <div style="margin-top:0.8rem"><ProfilesEditor /></div>
+  <p class="small muted" style="margin-top:1rem">Several people on one TV? <button class="link small" onclick={() => nav('/tv-profiles')}>Set up TV profiles and PINs</button></p>
 </main>
 
 <style>
