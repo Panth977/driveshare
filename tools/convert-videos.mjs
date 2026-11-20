@@ -16,6 +16,10 @@
 //                                                 "DriveShare previews" folder, next to their originals
 //   MIN_FREE_GB=5 node tools/convert-videos.mjs   keep less disk spare (default 30 GB)
 //
+// Besides the old formats, every run also checks the codec of each .mp4/.mov (ffprobe reads just the
+// headers over HTTP, a few hundred KB each; results kept in state.codecs) and converts the ones a
+// browser cannot play: H.264 in 10-bit or 4:2:2, MPEG-4 Part 2, MJPEG, DV… HEVC is left as it is.
+//
 // Drive access: the owner's token, taken from a signed-in DriveShare page in a headless Chrome
 // (the profile in .convert/profile; the app renews the token there, once an hour).
 // Work files, the state and the log live in .convert/ (not in git).
@@ -95,6 +99,49 @@ async function candidates() {
   // back as "video/mp2t").
   return out.filter((f) => !f.appProperties?.dsPlay && Number(f.size || 0) > 0 && Number(f.videoMediaMetadata?.durationMillis || 0) > 0 && !/\.d\.[mc]?ts$|\.[mc]?tsx?$/i.test(f.name) || /\.(m2t|m2ts|mts|mpg|mpeg|vob|avi)$/i.test(f.name) && !f.appProperties?.dsPlay && Number(f.size || 0) > 1e6 && !/\.d\.mts$/i.test(f.name))
     .sort((a, b) => Number(a.size) - Number(b.size));
+}
+
+// ── codecs of .mp4/.mov: which ones no browser can play ──
+const PLAYS = new Set(['h264', 'hevc', 'vp8', 'vp9', 'av1']);
+const badCodec = (c) => !!c && !c.err && (!PLAYS.has(c.codec) || (c.codec === 'h264' && !/^yuvj?420p$/.test(c.pix ?? '')));
+function ffprobeUrl(id, tok) {
+  return new Promise((resolve) => {
+    const p = spawn('ffprobe', ['-v', 'error', '-headers', `Authorization: Bearer ${tok}\r\n`, '-select_streams', 'v:0', '-show_entries', 'stream=codec_name,pix_fmt', '-of', 'json', `${API}/files/${id}?alt=media`], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    const kill = setTimeout(() => p.kill('SIGKILL'), 120e3);
+    p.stdout.on('data', (d) => (out += d));
+    p.on('close', () => {
+      clearTimeout(kill);
+      try { const st = JSON.parse(out).streams?.[0]; resolve(st ? { codec: st.codec_name, pix: st.pix_fmt } : { err: 'no video stream' }); } catch { resolve({ err: 'probe failed' }); }
+    });
+  });
+}
+async function scanCodecs() {
+  state.codecs ??= {};
+  const q = "(mimeType='video/mp4' or mimeType='video/quicktime') and trashed=false and 'me' in owners";
+  const all = [];
+  let pageToken = '';
+  do {
+    const r = await json('GET', `${API}/files?q=${encodeURIComponent(q)}&pageSize=1000&fields=nextPageToken,files(id,name,size,mimeType,parents,modifiedTime,appProperties,videoMediaMetadata(width,height,durationMillis))${pageToken ? `&pageToken=${pageToken}` : ''}`);
+    all.push(...r.files);
+    pageToken = r.nextPageToken;
+  } while (pageToken);
+  // Our own copies and files that already have one are fine; tiny files are damaged.
+  const mine = all.filter((f) => !f.appProperties?.dsPlay && !f.appProperties?.dsSource && Number(f.size || 0) > 1e6);
+  const todo = mine.filter((f) => !state.codecs[f.id]);
+  log(`codec check: ${mine.length} .mp4/.mov, ${todo.length} not checked yet`);
+  let n = 0;
+  const work = async (f) => {
+    state.codecs[f.id] = await ffprobeUrl(f.id, await getToken());
+    if (++n % 200 === 0) { save(); log(`  codecs ${n}/${todo.length}, ${mine.filter((x) => badCodec(state.codecs[x.id])).length} cannot play so far`); }
+  };
+  for (let i = 0; i < todo.length; i += 8) await Promise.all(todo.slice(i, i + 8).map(work));
+  save();
+  const bad = mine.filter((f) => badCodec(state.codecs[f.id]));
+  const kinds = {};
+  for (const f of bad) { const c = state.codecs[f.id]; const k = `${c.codec} ${c.pix}`; kinds[k] = (kinds[k] ?? 0) + 1; }
+  log(`codec check done: ${bad.length} cannot play in a browser (${Object.entries(kinds).map(([k, v]) => `${v}× ${k}`).join(', ')}); ${mine.filter((f) => state.codecs[f.id]?.err).length} could not be read`);
+  return bad;
 }
 
 async function previewsFolder() {
@@ -273,6 +320,10 @@ try {
     await one(f);
   } else {
     const list = await candidates();
+    if (args[0] !== '--list' || args[1] === '--codecs') {
+      const seen = new Set(list.map((f) => f.id));
+      for (const f of await scanCodecs()) if (!seen.has(f.id) && !state.done[f.id]) list.push(f);
+    }
     const gb = list.reduce((s, f) => s + Number(f.size), 0) / 1e9;
     log(`${list.length} videos to convert (${gb.toFixed(0)} GB), ${Object.keys(state.done).length} done before`);
     if (args[0] === '--list') { for (const f of list) console.log(f.id, f.mimeType, (Number(f.size) / 1e6).toFixed(0) + 'MB', f.name); }
