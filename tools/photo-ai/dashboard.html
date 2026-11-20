@@ -107,13 +107,16 @@ function overview() {
         <div class="muted small">${fmt(r.upright)} already upright · ${fmt(r.auto)} turned for you · <a href="#ask" onclick="nav('ask')">${fmt(r.ask)} to check</a> · ${fmt(r.answered)} you answered · ${fmt(st.rot_written)} labels in Drive</div></div>
       <div class="card"><div class="muted">Faces</div><div class="big">${fmt(st.faces)}</div>
         <div class="muted small">in ${fmt(st.with_faces)} photos · ${fmt(st.people)} people (${fmt(st.named)} named) · ${fmt(st.face_labels)} photos labelled in Drive</div></div>
+      ${videoCard()}
     </div>
     <h3>Jobs</h3>
     <div style="display:grid;gap:10px">
       ${job('scan', 'Look at photos', 'Fetches the small copy of each photo, checks which way is up and finds faces.' + (st.stage.list ? ' · ' + esc(st.stage.list) : ''))}
       ${job('group', 'Group faces into people', st.grouped_at ? 'Last grouped ' + new Date(st.grouped_at * 1000).toLocaleString() + '. Runs by itself when the scan ends; run it now to see people sooner.' : 'Runs by itself when the scan ends; run it now to see people sooner.')}
+      ${videoJob()}
       ${job('write', 'Write labels to Drive', 'Rotation labels (dsTurn) and face labels (dsFaces) on each photo, plus the face index files. Never changes a photo’s date.')}
     </div>
+    ${st.video ? `<h3>Video log</h3><div class="card log">${st.video.log.map(esc).join('\n') || '—'}</div>` : ''}
     <h3>Log</h3><div class="card log">${st.log.map((l) => new Date(l.at * 1000).toLocaleTimeString() + '  ' + esc(l.msg)).join('\n') || '—'}</div>`;
 }
 
@@ -156,6 +159,23 @@ function infinite({ box, page, size, row, wire, empty }) {
   const more = L.more;
   more();
   return L;
+}
+
+// ── video copies for the TV (tools/convert-videos.mjs) ──
+function videoCard() {
+  const v = st.video; if (!v) return '';
+  const total = v.codec_total, done = v.codec_done;
+  const pct = total ? Math.round((done / total) * 1000) / 10 : 0;
+  return `<div class="card"><div class="muted">Video copies for the TV</div><div class="big">${fmt(done)} <span class="muted small">of ${fmt(total)}</span></div>
+    <div class="bar"><div style="width:${pct}%"></div></div>
+    <div class="muted small">${pct}% of the .mp4/.mov the TV can't play${v.eta_min != null ? ` · about ${v.eta_min > 90 ? Math.round(v.eta_min / 60) + ' h' : v.eta_min + ' min'} left` : ''} · ${fmt(v.old_done)} old .mpg/.m2t/.avi done earlier${v.failed.length ? ` · <span style="color:var(--bad)">${v.failed.length} failed</span>` : ''}</div></div>`;
+}
+function videoJob() {
+  const v = st.video; if (!v) return '';
+  const s = v.state;
+  const detail = v.current ? `${esc(v.current)} · ${esc(v.step ?? '')}` : esc(v.step ?? 'nothing to do');
+  const btn = `<button class="b ${s === 'paused' ? 'p' : ''}" onclick="api('/api/job',{job:'video',action:'${s === 'running' ? 'pause' : 'play'}'}).then(poll)">${s === 'running' ? '❚❚ Pause' : '▶ Play'}</button>`;
+  return `<div class="card job"><span class="dot ${s}"></span><div class="grow"><b>Make MP4 copies of videos</b> <span class="pill">${s === 'idle' ? 'not running' : s}</span><div class="muted small">${detail}. Each copy goes next to its original as “name (converted).mp4”.${v.failed.length ? ' Failed: ' + v.failed.map((f) => esc(f.name)).join(', ') : ''}</div></div>${btn}</div>`;
 }
 
 // ── orientation: Review required · Skipped · Turned ──

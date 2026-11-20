@@ -406,6 +406,7 @@ def group():
                 if pid is not None and pid in new_person.values(): pid = None   # that person went to a bigger group
                 if pid is None:
                     cur.execute('INSERT INTO people(name) VALUES(NULL)'); pid = cur.lastrowid
+            pid = int(pid)   # a numpy int would be stored as an 8-byte blob
             new_person[r] = pid
             unl = [int(fids[i]) for i in members if not locked[i]]
             for k in range(0, len(unl), 900):
@@ -540,8 +541,73 @@ def status():
         'people_tabs': {k: c(f'SELECT COUNT(*) FROM people WHERE n>0 AND {w}') for k, w in (
             ('0', "hidden=0 AND (name IS NULL OR name='')"), ('1', "hidden=0 AND name IS NOT NULL AND name!=''"), ('hidden', 'hidden=1'))}, 'face_labels': c('SELECT COUNT(*) FROM photos WHERE faces_label IS NOT NULL'),
         'grouped_at': kv('groupedAt'),
+        'video': video_status(),
         'log': [dict(r) for r in q('SELECT at, msg FROM log ORDER BY at DESC LIMIT 12')],
     }
+
+# ── video copies (tools/convert-videos.mjs, LaunchAgent app.driveshare.convert): read its state and log ──
+CONVERT = os.path.join(ROOT, '.convert')
+_vid = {'mtime': None, 'state': None}
+PLAYS = {'h264', 'hevc', 'vp8', 'vp9', 'av1'}
+def _utc(ts):
+    import calendar
+    return calendar.timegm(time.strptime(ts, '%Y-%m-%d %H:%M:%S'))
+def convert_pid():
+    try:
+        out = subprocess.run(['launchctl', 'list', 'app.driveshare.convert'], capture_output=True, text=True, timeout=5).stdout
+        for line in out.splitlines():
+            if '"PID"' in line: return int(line.split('=')[1].strip(' ;'))
+    except Exception: pass
+    return None
+def _tree(pid):
+    kids = subprocess.run(['pgrep', '-P', str(pid)], capture_output=True, text=True).stdout.split()
+    return [pid] + [x for k in kids for x in _tree(int(k))]
+def video_status():
+    path = os.path.join(CONVERT, 'state.json')
+    try:
+        m = os.path.getmtime(path)
+        if m != _vid['mtime']: _vid['state'], _vid['mtime'] = json.load(open(path)), m
+    except Exception: return None
+    stt = _vid['state']
+    codecs = stt.get('codecs', {})
+    bad = [k for k, c in codecs.items() if c and not c.get('err') and (c.get('codec') not in PLAYS or (c.get('codec') == 'h264' and c.get('pix') not in ('yuv420p', 'yuvj420p')))]
+    done = stt.get('done', {})
+    out = {'old_done': len([k for k in done if k not in codecs]), 'codec_total': len(bad), 'codec_done': len([k for k in bad if k in done]),
+           'failed': [{'name': v.get('name'), 'error': v.get('error')} for v in stt.get('failed', {}).values()],
+           'checked': len(codecs), 'unreadable': len([c for c in codecs.values() if c and c.get('err')])}
+    # This run, from the log: total, finished, the file in hand and what it is doing.
+    try:
+        lines = open(os.path.join(CONVERT, 'convert.log'), encoding='utf-8', errors='replace').read().splitlines()[-4000:]
+    except Exception: lines = []
+    start = max((i for i, l in enumerate(lines) if ' videos to convert (' in l or 'codec check:' in l), default=None)
+    run = lines[start:] if start is not None else []
+    total = next((int(l[20:].split()[0]) for l in run if ' videos to convert (' in l), None)
+    sizes, ok, fails, cur, step, t_first, t_last = {}, 0, 0, None, None, None, None
+    for l in run:
+        body = l[20:]
+        if body.startswith('▶ '):
+            name = body[2:].rsplit(' (', 1)[0]; cur = name; step = 'downloading'
+            try: sizes[name] = float(body.rsplit('(', 1)[1].split(' GB')[0])
+            except Exception: pass
+        elif body.startswith('✓ '):
+            ok += 1; t_last = _utc(l[:19]); t_first = t_first or t_last; step = None
+        elif body.startswith('✗ '): fails += 1
+        elif body.strip().startswith('↑'): step = 'uploading ' + body.strip()[2:]
+        elif body.strip().startswith('↓'): step = 'downloading ' + body.strip()[2:]
+        elif body.strip().startswith('codecs '): step = 'checking codecs: ' + body.strip()[7:]
+        elif body.startswith('codec check:'): step = 'checking codecs'
+        elif body.startswith('finished:'): cur, step = None, 'finished'
+    if cur and step == 'downloading' and run and run[-1][20:].startswith('▶'): step = 'converting'
+    pid = convert_pid()
+    paused = False
+    if pid:
+        st_ = subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)], capture_output=True, text=True).stdout.strip()
+        paused = st_.startswith('T')
+    left = (total or 0) - ok - fails
+    eta = round((t_last - t_first) / max(ok - 1, 1) * left / 60) if t_first and t_last and ok > 1 and left > 0 else None
+    out.update({'run_total': total, 'run_done': ok, 'run_failed': fails, 'current': cur, 'step': step, 'eta_min': eta,
+                'state': 'paused' if paused else 'running' if pid else 'idle', 'log': [(time.strftime('%-I:%M:%S %p', time.localtime(_utc(l[:19]))) + '  ' + l[20:]) if l[:4].isdigit() else l for l in lines[-8:]][::-1]})
+    return out
 
 def merge(a, b):
     """Person b becomes person a."""
@@ -621,6 +687,14 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get('Content-Length') or 0); b = json.loads(self.rfile.read(n) or b'{}'); p = self.path
         try:
+            if p == '/api/job' and b.get('job') == 'video':
+                # Pause = freeze the converter and its ffmpeg (SIGSTOP); play = carry on where it was.
+                pid = convert_pid()
+                if pid:
+                    for x in _tree(pid): subprocess.run(['kill', '-STOP' if b['action'] == 'pause' else '-CONT', str(x)])
+                elif b['action'] == 'play':
+                    subprocess.run(['launchctl', 'kickstart', f'gui/{os.getuid()}/app.driveshare.convert'])
+                return self.send(200, {'ok': True})
             if p == '/api/job':
                 j, act = b['job'], b['action']
                 if j == 'group': JOBS['group'] = 'running' if act in ('play', 'run') else JOBS['group']
@@ -673,7 +747,23 @@ class H(BaseHTTPRequestHandler):
         except Exception as e:
             traceback.print_exc(); self.send(500, {'error': str(e)})
 
+def repair_person_blobs():
+    """Grouping once stored person ids as numpy blobs (8 bytes, little-endian): make them integers again."""
+    rows = q("SELECT fid, person FROM faces WHERE typeof(person)='blob'")
+    if not rows: return
+    with _db_lock:
+        CONN.executemany('UPDATE faces SET person=? WHERE fid=?', [(int.from_bytes(r['person'], 'little', signed=True), r['fid']) for r in rows])
+        # Their people were dropped as empty: bring them back (unnamed) so those faces have a group again.
+        CONN.execute('INSERT OR IGNORE INTO people(pid) SELECT DISTINCT person FROM faces WHERE person IS NOT NULL AND person NOT IN (SELECT pid FROM people)')
+        CONN.execute('UPDATE people SET n=(SELECT COUNT(*) FROM faces WHERE faces.person=people.pid)')
+        CONN.execute('''UPDATE people SET cover=(SELECT fid FROM faces WHERE faces.person=people.pid ORDER BY score*w*h DESC LIMIT 1)
+                        WHERE cover IS NULL OR cover NOT IN (SELECT fid FROM faces WHERE faces.person=people.pid)''')
+        CONN.execute('UPDATE shards SET dirty=1')
+        CONN.commit()
+    log(f'repaired {len(rows):,} faces whose person id was stored as bytes')
+
 def main():
+    repair_person_blobs()
     for t in (scan_loop, write_loop, group_loop):
         threading.Thread(target=lambda t=t: guard(t), daemon=True, name=t.__name__).start()
     if kv('groupedAt'): threading.Thread(target=build_questions, daemon=True).start()
